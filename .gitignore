@@ -12,3 +12,5 @@ scripts/*.txt
 scripts/*_alert
 scripts/alert.csv
 scripts/*.err
+calibration/
+*.DS_Store
