@@ -248,24 +248,19 @@ def timeline_calibration():
     calibrators = list()
     for i in range(5):
         calibrator = calibration(eruption_num=i, plots=False)
-        print(f"\n\nran eruption_num = {i}")
         f_name = f"{fm.rootdir}/calibration/calibration_forecast_model__te_{i}.pkl"
         save_dataframe(calibrator['predictions'], f_name, index_label = 'time')
         calibrators.append(calibrator)
-    print(calibrators)
     calibrator = calibration(eruption_num=None, plots=False)
-    print(f"\n\nran eruption_num = None")
     f_name = f"{fm.rootdir}/calibration/calibration_forecast_model__te_None.pkl"
     save_dataframe(calibrator['predictions'], f_name, index_label = 'time')
     calibrators.append(calibrator)
 
-
-    # do something - construct timeline
+    # construct timeline and insert the out of sample predictions
+    month = timedelta(days=365.25 / 12)
     f_load = f"{fm.rootdir}/calibration/calibration_forecast_model__te_None.pkl"
     timeline = load_dataframe(f_load, index_col='time')
 
-    # insert the out of sample predictions
-    month = timedelta(days=365.25 / 12)
     for i, te in enumerate(TremorData().tes):
         ti_test = te-month
         tf_test = te+month
@@ -274,33 +269,28 @@ def timeline_calibration():
         out_of_sample = load_df.loc[(load_df.index >= ti_test) & (load_df.index < tf_test)]
 
         # Update seems simple enough https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.update.html
-        print(timeline.loc[out_of_sample.index])
         timeline.update(out_of_sample)
-        print(timeline.loc[out_of_sample.index])
 
-    # do something else - run sigmoid function
+    # run sigmoid calibration
     ys = pd.DataFrame(fm._get_label(timeline.index.values), columns=['label'], index=timeline.index)
     a,b = _sigmoid_calibration(timeline.prediction, ys)
+    with open(f"{fm.rootdir}/calibration/sigmoid_parameters__full_calibrated.csv", "w") as f:
+        f.write(f"a,b\n{a},{b}")
 
-    # final thing - plot everything to see (rsam, model output and calibration output)
-    calibrated = expit(-(a * timeline.prediction + b))
-    #### TO SAVE THE PROGS
+    # and apply function
     def get_calibrated(prediction):
         return expit(-(a * prediction + b))
-
     timeline['full_calibrated'] = timeline['prediction'].apply(get_calibrated)
     timeline['ys'] = ys
 
     f_save = f"{fm.rootdir}/calibration/calibration_forecast_model__TIMELINE.pkl"
     save_dataframe(timeline, f_save, index_label='time')
-    #### END SAVE THE PROGS
 
     # ==== plot of calibrated probabilities vs thresholds ====
     f, ax = plt.subplots(1, 1, figsize=(18, 12))
 
     plt.axvline(0.8, color='pink', linewidth=5, zorder=1)
     plt.scatter(timeline.prediction, timeline.full_calibrated, c='orange', s=50, zorder=2)
-
     plt.xlabel("Timeline probability output", fontsize=25)
     plt.ylabel("Calibrated Sigmoid Output", fontsize=25)
     plt.title(f"Threshold vs probability full timeline", fontsize=28)
@@ -311,8 +301,6 @@ def timeline_calibration():
     plt.savefig(f"{fm.plotdir}/threshold_vs_probability__timeline.png", format='png', dpi=300)
     plt.close()
 
-    with open(f"{fm.rootdir}/calibration/sigmoid_parameters__full_calibrated.csv", "w") as f:
-        f.write(f"a,b\n{a},{b}")
 
 def _sigmoid_calibration(df, y, sample_weight=None):
     """Probability Calibration with sigmoid method (Platt 2000)
@@ -336,8 +324,6 @@ def _sigmoid_calibration(df, y, sample_weight=None):
     ----------
     Platt, "Probabilistic Outputs for Support Vector Machines"
     """
-    
-
     df = column_or_1d(df)
     y = column_or_1d(y)
 
