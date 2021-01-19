@@ -278,12 +278,12 @@ def timeline_calibration():
         f.write(f"a,b\n{a},{b}")
 
     # and apply function
-    def get_calibrated(prediction):
+    def get_calibrated(prediction,a,b):
         return expit(-(a * prediction + b))
-    timeline['full_calibrated'] = timeline['prediction'].apply(get_calibrated)
+    timeline['full_calibrated'] = timeline['prediction'].apply(get_calibrated, a=a, b=b)
     timeline['ys'] = ys
 
-    f_save = f"{fm.rootdir}/calibration/calibration_forecast_model__TIMELINE.pkl"
+    f_save = f"{fm.rootdir}/calibration/{fm.root}__TIMELINE.pkl"
     save_dataframe(timeline, f_save, index_label='time')
 
     # ==== plot of calibrated probabilities vs thresholds ====
