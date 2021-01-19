@@ -360,8 +360,23 @@ def _sigmoid_calibration(df, y, sample_weight=None):
     AB_ = fmin_bfgs(objective, AB0, fprime=grad, disp=False)
     return AB_[0], AB_[1]
 
+def single_sweep(pp, ys, thresholds=[]):
+    ''' This function takes a timeline of predict_proba(), ys and probability thresholds
+    '''
+    pass
+
+def full_sweep():
+    ''' This function does every sweep of lookforwards and probability thresholds
+
+    Generates heatmap of lookforwards and probability thresholds
+    Does multiple calls to single_sweep() for each lookforward
+    Saves the outputs from each sweep into csv file
+    '''
+    pass
+
 
 if __name__ == '__main__':
     # os.chdir('..')  # set working directory to root
     # calibration()
-    timeline_calibration()
+    # timeline_calibration()
+    full_sweep()
