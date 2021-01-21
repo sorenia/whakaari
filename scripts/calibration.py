@@ -215,7 +215,7 @@ def calibration(download_data=False, plots=True, eruption_num=4):
     X_full, y_full = fm._extract_features(ti=fm.ti_train, tf=fm.tf_train)
     predictions = pd.DataFrame({
         "time": X_full.index,
-        "calibrated_prediction": calibrated_classifier.predict_proba(X_full)[:, 1],
+        "calibrated_prediction": calibrated_classifier.predict_proba(X_full)[:, 1], # Calibrated_prediction is from CCCV
         "prediction": classifier.predict_proba(X_full)[:, 1],
     }).set_index('time')
 
@@ -278,8 +278,6 @@ def timeline_calibration():
         f.write(f"a,b\n{a},{b}")
 
     # and apply function
-    def get_calibrated(prediction,a,b):
-        return expit(-(a * prediction + b))
     timeline['full_calibrated'] = timeline['prediction'].apply(get_calibrated, a=a, b=b)
     timeline['ys'] = ys
 
@@ -360,20 +358,185 @@ def _sigmoid_calibration(df, y, sample_weight=None):
     AB_ = fmin_bfgs(objective, AB0, fprime=grad, disp=False)
     return AB_[0], AB_[1]
 
-def single_sweep(pp, ys, thresholds=[]):
-    ''' This function takes a timeline of predict_proba(), ys and probability thresholds
+def get_calibrated(prediction, a, b):
+    ''' Helper function to apply a,b to set of predictions (see pd.DataFrame.apply())
     '''
-    pass
+    return expit(-(a * prediction + b))
 
-def full_sweep():
+def get_alertdays(alerts, lf):
+    ''' Helper function to convert model alerts into alert days
+
+        Parameters:
+        -----------
+        alerts : pd.Series / column of pd.DataFrame
+            The periods when the model gives an alerts. NOTE assumes index is of Datetime
+        lf : float
+            Days for lookforward alert (Default 2.) Used to construct ys
+
+        Returns:
+        --------
+        alert_days: pd.Series
+            thresholds used for calculating
+    '''
+    alert_period = timedelta(days=lf)
+    alert_days = alerts.copy()
+    als = alert_days.loc[alert_days == 1]
+    for al in als.index:
+        start = al
+        alert_days.loc[start:start+alert_period] = 1
+    return alert_days
+
+
+def construct_timeline():
+    data_streams = ['rsam', 'mf', 'hf', 'dsar']
+    fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
+                       look_forward=2., data_streams=data_streams, root=f'calibration_forecast_model', savefile_type='pkl')
+
+    try:
+        f_load = f"{fm.rootdir}/calibration/{fm.root}__TIMELINE.pkl"
+        timeline = load_dataframe(f_load, index_col='time')
+        return timeline
+    except FileNotFoundError:
+        print(f"file {f_load} not found... constructing timeline")
+
+    # construct timeline and insert the out of sample predictions
+    month = timedelta(days=365.25 / 12)
+    f_load = f"{fm.rootdir}/calibration/{fm.root}__te_None.pkl"
+    timeline = load_dataframe(f_load, index_col='time')
+
+    for i, te in enumerate(TremorData().tes):
+        ti_test = te-month
+        tf_test = te+month
+        f_load = f"{fm.rootdir}/calibration/{fm.root}__te_{i}.pkl"
+        load_df = load_dataframe(f_load, index_col='time')
+        out_of_sample = load_df.loc[(
+            load_df.index >= ti_test) & (load_df.index < tf_test)]
+
+        # Update seems simple enough https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.update.html
+        timeline.update(out_of_sample)
+
+    # run sigmoid calibration
+    ys = pd.DataFrame(fm._get_label(timeline.index.values),
+                      columns=['label'], index=timeline.index)
+    a, b = _sigmoid_calibration(timeline.prediction, ys)
+    with open(f"{fm.rootdir}/calibration/sigmoid_parameters__full_calibrated.csv", "w") as f:
+        f.write(f"a,b\n{a},{b}")
+
+    timeline['full_calibrated'] = timeline['prediction'].apply(
+        get_calibrated, a=a, b=b)
+    timeline['ys'] = ys
+
+    f_save = f"{fm.rootdir}/calibration/{fm.root}__TIMELINE.pkl"
+    save_dataframe(timeline, f_save, index_label='time')
+    return timeline
+
+
+def single_sweep(pp, ys, tes, lf=2., thresholds=[0.005, 0.05], inplace=False):
+    ''' This function takes a timeline of predict_proba(), ys and probability thresholds
+
+        Parameters:
+        -----------
+        pp : pandas.DataFrame
+            Dataframe of windowed predict_proba()
+        ys : ndarray, shape (n_samples,)
+            The targets.
+        lf : float
+            Days for lookforward alert (Default 2.) Used to construct ys
+        thresholds : list
+            List of floats to conduct thresholds (Default range 0.5%-5%)
+        inplace: bool
+            If the function should make a copy of dataframe
+
+        Returns:
+        --------
+        thresholds: list
+            thresholds used for calculating
+        alert_ratios: list
+            alert ratio corresponding to each day
+        pp : pandas.DataFrame
+            Dataframe of windowed data, with 'id' column denoting individual windows.
+    '''
+    if not inplace: pp = pp.copy() # Copy to make sure the user does not want the dataframe to change
+
+    # Generate a, b from sigmoid calibration
+    a, b = _sigmoid_calibration(pp.prediction, ys)
+
+    cal_string = f'calibrated__lf_{lf}'
+    # and apply sigmoid function
+    pp[cal_string] = pp['prediction'].apply(get_calibrated, a=a, b=b)
+
+    # if 2 numbers in list, assume start and end point
+    if len(thresholds) == 2:
+        thresholds = np.round(np.linspace(
+            thresholds[0], thresholds[-1], num=10, endpoint=True), 4)
+
+    alert_ratios = list()
+    accuracies = list()
+    len_tes = len(tes)
+    # for each threshold test the calibrated and generate alerts
+    for th in thresholds:
+        # alert mask
+        al_string = f'alerts__lf_{lf}__th_{th}'
+        alerts = pp[cal_string] >= th
+        pp[al_string] = alerts.astype(int)
+
+        # alert day mask
+        ald_string = f'alert_days__lf_{lf}__th_{th}'
+        pp[ald_string] = get_alertdays(pp[al_string], lf)
+
+        # Calculation of ratios and accuracies
+        alert_ratios.append(pp[ald_string].sum() / pp[ald_string].count())
+
+        # calculate accuracy here by looping through tes and incrementing count
+        correct = 0
+        for te in tes:
+            last_alert = pp.loc[pp.index<=te][ald_string].iloc[-1]
+            if last_alert == 1: correct = correct+1
+        accuracies.append(correct/len_tes)
+
+    if inplace:
+        return alert_ratios, accuracies, thresholds
+    else:
+        return alert_ratios, accuracies, thresholds, pp
+
+
+def full_sweep(load_hm=None, load_acc=None):
     ''' This function does every sweep of lookforwards and probability thresholds
 
     Generates heatmap of lookforwards and probability thresholds
     Does multiple calls to single_sweep() for each lookforward
     Saves the outputs from each sweep into csv file
     '''
-    pass
+    if load_hm is not None and load_acc is not None:
+        # load files from dir
+    else:
+        tes_pop = TremorData().tes
+        tes_pop.pop(3) # remove hard earthquake
+        timeline = construct_timeline()
+        pp = timeline.drop(['ys', 'full_calibrated', 'calibrated_prediction'], axis='columns')
 
+        thresholds = np.round(np.linspace(
+            0.005, 0.05, num=10, endpoint=True), 4)
+        look_forwards = np.arange(1,14, step=0.5)
+        alert_ratios = dict()
+        accuracies = dict()
+        for lf in look_forwards:
+            print(f"creating forecast model with lf = {lf}")
+            fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
+                            look_forward=lf, root=f'calibration_forecast_model', savefile_type='pkl')
+            ys = pd.DataFrame(fm._get_label(pp.index.values), columns=['label'], index=pp.index)
+            lf_alert_ratios, lf_accuracies, _ = single_sweep(pp, ys, tes=tes_pop, lf=lf, thresholds=thresholds, inplace=True)
+            alert_ratios[lf] = lf_alert_ratios
+            accuracies[lf] = lf_accuracies
+            print(f"done")
+        hm_df = pd.DataFrame(alert_ratios,
+                            index=[f'threshold_{th}'for th in thresholds]).add_prefix('lookforward_')
+        acc_df = pd.DataFrame(accuracies,
+                            index=[f'threshold_{th}'for th in thresholds]).add_prefix('lookforward_')
+        save_hm = f"{fm.rootdir}/calibration/heatmap/heatmap_df.csv"
+        save_acc = f"{fm.rootdir}/calibration/heatmap/accuracies_df.csv"
+        save_dataframe(hm_df, save_hm)
+        save_dataframe(acc_df, save_acc)
 
 if __name__ == '__main__':
     # os.chdir('..')  # set working directory to root
