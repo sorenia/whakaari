@@ -509,6 +509,9 @@ def full_sweep(load_hm=None, load_acc=None):
     '''
     if load_hm is not None and load_acc is not None:
         # load files from dir
+        hm_df = load_dataframe(load_hm)
+        acc_df = load_dataframe(load_acc)
+
     else:
         tes_pop = TremorData().tes
         tes_pop.pop(3) # remove hard earthquake
@@ -537,6 +540,7 @@ def full_sweep(load_hm=None, load_acc=None):
         save_acc = f"{fm.rootdir}/calibration/heatmap/accuracies_df.csv"
         save_dataframe(hm_df, save_hm)
         save_dataframe(acc_df, save_acc)
+    return hm_df, acc_df
 
 if __name__ == '__main__':
     # os.chdir('..')  # set working directory to root
