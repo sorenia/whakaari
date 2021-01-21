@@ -509,8 +509,8 @@ def full_sweep(load_hm=None, load_acc=None):
     '''
     if load_hm is not None and load_acc is not None:
         # load files from dir
-        hm_df = load_dataframe(load_hm)
-        acc_df = load_dataframe(load_acc)
+        hm_df = load_dataframe(load_hm, index_col="thresholds")
+        acc_df = load_dataframe(load_acc, index_col="thresholds")
 
     else:
         tes_pop = TremorData().tes
@@ -534,16 +534,54 @@ def full_sweep(load_hm=None, load_acc=None):
             print(f"done")
         hm_df = pd.DataFrame(alert_ratios,
                             index=[f'threshold_{th}'for th in thresholds]).add_prefix('lookforward_')
+        hm_df.index.name = "thresholds"
         acc_df = pd.DataFrame(accuracies,
                             index=[f'threshold_{th}'for th in thresholds]).add_prefix('lookforward_')
+        acc_df.index.name = "thresholds"
         save_hm = f"{fm.rootdir}/calibration/heatmap/heatmap_df.csv"
         save_acc = f"{fm.rootdir}/calibration/heatmap/accuracies_df.csv"
         save_dataframe(hm_df, save_hm)
         save_dataframe(acc_df, save_acc)
     return hm_df, acc_df
 
+def plot_heatmap():
+    ''' This function calls full_sweep() with saved dataframes then creates heatmap
+    '''
+    fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
+                       look_forward=2., root=f'calibration_forecast_model', savefile_type='pkl')
+    tes_pop = TremorData().tes
+    tes_pop.pop(3) # remove hard earthquake
+    load_hm = f"{fm.rootdir}/calibration/heatmap/heatmap_df.csv"
+    load_acc = f"{fm.rootdir}/calibration/heatmap/accuracies_df.csv"
+    hm_df, acc_df = full_sweep(load_hm, load_acc)
+    acc_df = acc_df*len(tes_pop)
+    acc_df = acc_df.astype(int)
+    # colours here
+    cmap_dict = {
+        "1": "Reds",
+        "2": "Oranges",
+        "3": "Blues",
+        "4": "Greens",
+    }
+
+    fig, ax = plt.subplots()
+
+    # extent sets the axis ticks x_left,x_right,y_bottom,y_top
+    ax.imshow(acc_df.where(acc_df == 0), cmap="Greys", interpolation=None,
+              vmin=0, vmax=1, extent=[0, 14, 0.05, 0], aspect='auto')
+    for acc in cmap_dict.keys():
+        hmap = 1-hm_df.where(acc_df==int(acc))
+        ax.imshow(hmap, cmap=cmap_dict[acc],
+                  interpolation=None, vmin=0, vmax=1, extent=[0.5, 13.5, 0.05, 0.005],aspect='auto')
+    plt.ylabel('probability thresholds for alert')
+    plt.xlabel('look_forward (days)')
+    plt.title("Heatmap showing alert day ratio given probability and lookforward")
+    plt.show()
+
+
 if __name__ == '__main__':
     # os.chdir('..')  # set working directory to root
     # calibration()
     # timeline_calibration()
-    full_sweep()
+    # full_sweep()
+    plot_heatmap()
