@@ -558,6 +558,8 @@ def full_sweep(load_adr=None, load_acc=None, load_far=None):
     Generates heatmap of lookforwards and probability thresholds
     Does multiple calls to single_sweep() for each lookforward
     Saves the outputs from each sweep into csv file
+
+    This function is also where you sat
     '''
     if load_adr is not None and load_acc is not None and load_far is not None:
         # load files from dir
@@ -573,7 +575,7 @@ def full_sweep(load_adr=None, load_acc=None, load_far=None):
 
         thresholds = np.round(np.linspace(
             0.005, 0.05, num=10, endpoint=True), 4)
-        look_forwards = np.arange(1,14, step=0.5)
+        look_forwards = np.arange(1,7.5, step=0.5)
         alertday_ratios = dict()
         accuracies = dict()
         falsealert_ratios = dict()
@@ -667,22 +669,22 @@ def plot_contours():
 
     clist= [v for k,v in cmap_dict.items()]
 
-    figs, axs = plt.subplots(2,figsize=(18.5/2,10.5))
+    fig, axs = plt.subplots(1,2,figsize=(10.5,18.5/2),sharey=True)
     col_names = adr_df.columns.values
     col_names = [x.split('_')[-1] for x in col_names]
     row_names = adr_df.index.values
     row_names = [y.split('_')[-1] for y in row_names]
     z = acc_df.values
-
     for ax in axs:
-        ax.contourf(col_names, row_names, z, colors=clist, levels=[i-0.05 for i in range(6)], alpha=0.8)
-        ax.xticks(fontsize=8)
-        ax.yticks(fontsize=8)
-        ax.set_ylabel('Thresholds', fontsize=12)
+        ct = ax.contourf(col_names, row_names, z, colors=clist, levels=[i-.5 for i in range(6)], alpha=0.8)
+        ax.tick_params(labelsize=8)
+        ax.tick_params(axis='x', labelrotation=0.25)
         ax.set_xlabel('Lookforwards', fontsize=12)
 
-    ax[0].set_title('Alert Day Ratio', fontsize=24)
-    ax[1].set_title('False Alert Ratio', fontsize=24)
+    axs[0].set_title('Alert Day Ratio', fontsize=24)
+    axs[0].set_ylabel('Thresholds', fontsize=12)
+    axs[1].set_title('False Alert Ratio', fontsize=24)
+    fig.colorbar(ct)
     # fig.set_size_inches(18.5, 10.5)
     plt.show()
 
