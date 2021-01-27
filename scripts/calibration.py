@@ -363,6 +363,7 @@ def get_calibrated(prediction, a, b):
     '''
     return expit(-(a * prediction + b))
 
+
 def get_alertdays(alerts, lf):
     ''' Helper function to convert model alerts into alert days
 
@@ -385,6 +386,48 @@ def get_alertdays(alerts, lf):
         start = al
         alert_days.loc[start:start+alert_period] = 1
     return alert_days
+
+
+def get_falsealerts(alerts, lf, tes):
+    ''' Helper function to convert model alerts into false alert ratio
+
+        This function assumes that alerts start on the time issued and end prior to the look forward
+
+        Parameters:
+        -----------
+        alerts : pd.Series / column of pd.DataFrame
+            The periods when the model gives an alerts. NOTE assumes index is of Datetime
+        lf : float
+            Days for lookforward alert (Default 2.) Used to construct ys
+        tes : list of Datetimes
+            Start of eruptions
+
+        Returns:
+        --------
+        falsealert_ratio: float
+            ratio of false alerts : true alerts a.k.a. false alerts/all alerts
+    '''
+    alert_period = timedelta(days=lf)
+    modelalerts = alerts.loc[alerts == 1]
+    if len(modelalerts) == 0:
+        return 0
+    falsealerts = 0
+    for al in modelalerts.index:
+        eruption=False
+        for te in tes:
+            if al <= te and te < al+alert_period:
+                eruption=True
+                break
+        if not eruption: falsealerts=falsealerts+1
+
+    falsealert_ratio = falsealerts/len(modelalerts)
+    return falsealert_ratio
+
+
+def get_truealerts(alerts, lf, tes):
+    ''' Handle function that returns true alarms a.k.a. 1-falsealarm_ratio
+    '''
+    return 1-get_falsealerts(alerts, lf, tes)
 
 
 def construct_timeline():
@@ -440,6 +483,8 @@ def single_sweep(pp, ys, tes, lf=2., thresholds=[0.005, 0.05], inplace=False):
             Dataframe of windowed predict_proba()
         ys : ndarray, shape (n_samples,)
             The targets.
+        tes : list of Datetime
+            Times when eruptions occur
         lf : float
             Days for lookforward alert (Default 2.) Used to construct ys
         thresholds : list
@@ -451,8 +496,10 @@ def single_sweep(pp, ys, tes, lf=2., thresholds=[0.005, 0.05], inplace=False):
         --------
         thresholds: list
             thresholds used for calculating
-        alert_ratios: list
-            alert ratio corresponding to each day
+        alertday_ratios: list
+            alert ratio corresponding to time model in alert
+        falsealert_ratios: list
+            falsealert ratio corresponding to each alert
         pp : pandas.DataFrame
             Dataframe of windowed data, with 'id' column denoting individual windows.
     '''
@@ -470,8 +517,9 @@ def single_sweep(pp, ys, tes, lf=2., thresholds=[0.005, 0.05], inplace=False):
         thresholds = np.round(np.linspace(
             thresholds[0], thresholds[-1], num=10, endpoint=True), 4)
 
-    alert_ratios = list()
+    alertday_ratios = list()
     accuracies = list()
+    falsealert_ratios = list()
     len_tes = len(tes)
     # for each threshold test the calibrated and generate alerts
     for th in thresholds:
@@ -485,7 +533,7 @@ def single_sweep(pp, ys, tes, lf=2., thresholds=[0.005, 0.05], inplace=False):
         pp[ald_string] = get_alertdays(pp[al_string], lf)
 
         # Calculation of ratios and accuracies
-        alert_ratios.append(pp[ald_string].sum() / pp[ald_string].count())
+        alertday_ratios.append(pp[ald_string].sum() / pp[ald_string].count())
 
         # calculate accuracy here by looping through tes and incrementing count
         correct = 0
@@ -494,23 +542,28 @@ def single_sweep(pp, ys, tes, lf=2., thresholds=[0.005, 0.05], inplace=False):
             if last_alert == 1: correct = correct+1
         accuracies.append(correct/len_tes)
 
+        # Calculate false alarm rate
+        falsealert_ratios.append(get_falsealerts(pp[al_string], lf, tes))
+
+    # NOTE: considering switching the return statement to a single dict + pp (if required)
     if inplace:
-        return alert_ratios, accuracies, thresholds
+        return alertday_ratios, accuracies, falsealert_ratios, thresholds
     else:
-        return alert_ratios, accuracies, thresholds, pp
+        return alertday_ratios, accuracies, falsealert_ratios, thresholds, pp
 
 
-def full_sweep(load_hm=None, load_acc=None):
+def full_sweep(load_adr=None, load_acc=None, load_far=None):
     ''' This function does every sweep of lookforwards and probability thresholds
 
     Generates heatmap of lookforwards and probability thresholds
     Does multiple calls to single_sweep() for each lookforward
     Saves the outputs from each sweep into csv file
     '''
-    if load_hm is not None and load_acc is not None:
+    if load_adr is not None and load_acc is not None and load_far is not None:
         # load files from dir
-        hm_df = load_dataframe(load_hm, index_col="thresholds")
+        adr_df = load_dataframe(load_adr, index_col="thresholds")
         acc_df = load_dataframe(load_acc, index_col="thresholds")
+        far_df = load_dataframe(load_far, index_col="thresholds")
 
     else:
         tes_pop = TremorData().tes
@@ -521,28 +574,35 @@ def full_sweep(load_hm=None, load_acc=None):
         thresholds = np.round(np.linspace(
             0.005, 0.05, num=10, endpoint=True), 4)
         look_forwards = np.arange(1,14, step=0.5)
-        alert_ratios = dict()
+        alertday_ratios = dict()
         accuracies = dict()
+        falsealert_ratios = dict()
         for lf in look_forwards:
             print(f"creating forecast model with lf = {lf}")
             fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
                             look_forward=lf, root=f'calibration_forecast_model', savefile_type='pkl')
             ys = pd.DataFrame(fm._get_label(pp.index.values), columns=['label'], index=pp.index)
-            lf_alert_ratios, lf_accuracies, _ = single_sweep(pp, ys, tes=tes_pop, lf=lf, thresholds=thresholds, inplace=True)
-            alert_ratios[lf] = lf_alert_ratios
+            lf_alertday_ratios, lf_accuracies, lf_falsealert_ratios, _ = single_sweep(pp, ys, tes=tes_pop, lf=lf, thresholds=thresholds, inplace=True)
+            alertday_ratios[lf] = lf_alertday_ratios
             accuracies[lf] = lf_accuracies
+            falsealert_ratios[lf] = lf_falsealert_ratios
             print(f"done")
-        hm_df = pd.DataFrame(alert_ratios,
+        adr_df = pd.DataFrame(alertday_ratios,
                             index=[f'threshold_{th}'for th in thresholds]).add_prefix('lookforward_')
-        hm_df.index.name = "thresholds"
+        adr_df.index.name = "thresholds"
         acc_df = pd.DataFrame(accuracies,
                             index=[f'threshold_{th}'for th in thresholds]).add_prefix('lookforward_')
         acc_df.index.name = "thresholds"
-        save_hm = f"{fm.rootdir}/calibration/heatmap/heatmap_df.csv"
+        far_df = pd.DataFrame(falsealert_ratios,
+                            index=[f'threshold_{th}'for th in thresholds]).add_prefix('lookforward_')
+        far_df.index.name = "thresholds"
+        save_adr = f"{fm.rootdir}/calibration/heatmap/alertdayratios_df.csv"
         save_acc = f"{fm.rootdir}/calibration/heatmap/accuracies_df.csv"
-        save_dataframe(hm_df, save_hm)
+        save_far = f"{fm.rootdir}/calibration/heatmap/falsealertratios_df.csv"
+        save_dataframe(adr_df, save_adr)
         save_dataframe(acc_df, save_acc)
-    return hm_df, acc_df
+        save_dataframe(far_df, save_far)
+    return adr_df, acc_df, far_df
 
 def plot_heatmap():
     ''' This function calls full_sweep() with saved dataframes then creates heatmap
@@ -551,9 +611,9 @@ def plot_heatmap():
                        look_forward=2., root=f'calibration_forecast_model', savefile_type='pkl')
     tes_pop = TremorData().tes
     tes_pop.pop(3) # remove hard earthquake
-    load_hm = f"{fm.rootdir}/calibration/heatmap/heatmap_df.csv"
+    load_adr = f"{fm.rootdir}/calibration/heatmap/heatmap_df.csv"
     load_acc = f"{fm.rootdir}/calibration/heatmap/accuracies_df.csv"
-    hm_df, acc_df = full_sweep(load_hm, load_acc)
+    adr_df, acc_df = full_sweep(load_adr, load_acc)
     acc_df = acc_df*len(tes_pop)
     acc_df = acc_df.astype(int)
     # colours here
@@ -570,12 +630,60 @@ def plot_heatmap():
     ax.imshow(acc_df.where(acc_df == 0), cmap="Greys", interpolation=None,
               vmin=0, vmax=1, extent=[0, 14, 0.05, 0], aspect='auto')
     for acc in cmap_dict.keys():
-        hmap = 1-hm_df.where(acc_df==int(acc))
-        ax.imshow(hmap, cmap=cmap_dict[acc],
+        adr_map = 1-adr_df.where(acc_df==int(acc))
+        ax.imshow(adr_map, cmap=cmap_dict[acc],
                   interpolation=None, vmin=0, vmax=1, extent=[0.5, 13.5, 0.05, 0.005],aspect='auto')
     plt.ylabel('probability thresholds for alert')
     plt.xlabel('look_forward (days)')
     plt.title("Heatmap showing alert day ratio given probability and lookforward")
+    fig = plt.gcf()
+    fig.set_size_inches(18.5, 10.5)
+    plt.show()
+
+
+def plot_contours():
+    ''' This function calls full_sweep() with saved dataframes then creates contour plot
+    '''
+    fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
+                       look_forward=2., root=f'calibration_forecast_model', savefile_type='pkl')
+    tes_pop = TremorData().tes
+    tes_pop.pop(3) # remove hard earthquake
+    load_adr = f"{fm.rootdir}/calibration/heatmap/heatmap_df.csv"
+    load_acc = f"{fm.rootdir}/calibration/heatmap/accuracies_df.csv"
+    load_far = f"{fm.rootdir}/calibration/heatmap/falsealertratios_df.csv"
+    # adr_df, acc_df, far_df = full_sweep(
+    #     load_adr=load_adr, load_acc=load_acc, load_far=load_far)
+    adr_df, acc_df, far_df = full_sweep()
+    acc_df = acc_df*len(tes_pop)
+    acc_df = acc_df.astype(int)
+    # colours here
+    cmap_dict = {
+        "0": "tab:gray",
+        "1": "tab:red",
+        "2": "tab:orange",
+        "3": "tab:blue",
+        "4": "tab:green",
+    }
+
+    clist= [v for k,v in cmap_dict.items()]
+
+    figs, axs = plt.subplots(2,figsize=(18.5/2,10.5))
+    col_names = adr_df.columns.values
+    col_names = [x.split('_')[-1] for x in col_names]
+    row_names = adr_df.index.values
+    row_names = [y.split('_')[-1] for y in row_names]
+    z = acc_df.values
+
+    for ax in axs:
+        ax.contourf(col_names, row_names, z, colors=clist, levels=[i-0.05 for i in range(6)], alpha=0.8)
+        ax.xticks(fontsize=8)
+        ax.yticks(fontsize=8)
+        ax.set_ylabel('Thresholds', fontsize=12)
+        ax.set_xlabel('Lookforwards', fontsize=12)
+
+    ax[0].set_title('Alert Day Ratio', fontsize=24)
+    ax[1].set_title('False Alert Ratio', fontsize=24)
+    # fig.set_size_inches(18.5, 10.5)
     plt.show()
 
 
@@ -584,4 +692,5 @@ if __name__ == '__main__':
     # calibration()
     # timeline_calibration()
     # full_sweep()
-    plot_heatmap()
+    # plot_heatmap()
+    plot_contours()
