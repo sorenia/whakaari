@@ -645,17 +645,21 @@ def plot_heatmap():
 
 def plot_contours():
     ''' This function calls full_sweep() with saved dataframes then creates contour plot
+
+    Try some more formatting using
+    colorbar - https://stackoverflow.com/questions/15908371/matplotlib-colorbars-and-its-text-labels 
+    contours - https://matplotlib.org/3.1.1/gallery/images_contours_and_fields/contour_label_demo.html#sphx-glr-gallery-images-contours-and-fields-contour-label-demo-py
     '''
     fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
                        look_forward=2., root=f'calibration_forecast_model', savefile_type='pkl')
     tes_pop = TremorData().tes
     tes_pop.pop(3) # remove hard earthquake
-    load_adr = f"{fm.rootdir}/calibration/heatmap/heatmap_df.csv"
+    load_adr = f"{fm.rootdir}/calibration/heatmap/alertdayratios_df.csv"
     load_acc = f"{fm.rootdir}/calibration/heatmap/accuracies_df.csv"
     load_far = f"{fm.rootdir}/calibration/heatmap/falsealertratios_df.csv"
-    # adr_df, acc_df, far_df = full_sweep(
-    #     load_adr=load_adr, load_acc=load_acc, load_far=load_far)
-    adr_df, acc_df, far_df = full_sweep()
+    adr_df, acc_df, far_df = full_sweep(
+        load_adr=load_adr, load_acc=load_acc, load_far=load_far)
+    # adr_df, acc_df, far_df = full_sweep()
     acc_df = acc_df*len(tes_pop)
     acc_df = acc_df.astype(int)
     # colours here
@@ -669,10 +673,10 @@ def plot_contours():
 
     clist= [v for k,v in cmap_dict.items()]
 
-    fig, axs = plt.subplots(1,2,figsize=(10.5,18.5/2),sharey=True)
-    col_names = adr_df.columns.values
+    fig, axs = plt.subplots(1,2,figsize=(10.5,18.5/3),sharey=True)
+    col_names = acc_df.columns.values
     col_names = [x.split('_')[-1] for x in col_names]
-    row_names = adr_df.index.values
+    row_names = acc_df.index.values
     row_names = [y.split('_')[-1] for y in row_names]
     z = acc_df.values
     for ax in axs:
@@ -680,10 +684,21 @@ def plot_contours():
         ax.tick_params(labelsize=8)
         ax.tick_params(axis='x', labelrotation=0.25)
         ax.set_xlabel('Lookforwards', fontsize=12)
-
-    axs[0].set_title('Alert Day Ratio', fontsize=24)
     axs[0].set_ylabel('Thresholds', fontsize=12)
+
+    adr_levels = np.linspace(0,0.4, num=10, endpoint=True)
+    adr_vals = adr_df.values
+    far_levels = [1,0.985,0.98,0.975,0.95,0.945]
+    far_levels.sort()
+    far_vals = far_df.values
+    axs[0].set_title('Alert Day Ratio', fontsize=24)
+    adr_cs=axs[0].contour(col_names, row_names, adr_vals, levels=adr_levels, colors='black')
+    axs[0].clabel(adr_cs, inline=True, fontsize=10)
+
     axs[1].set_title('False Alert Ratio', fontsize=24)
+    far_cs = axs[1].contour(col_names, row_names, far_vals, levels=far_levels, colors='black')
+    axs[1].clabel(far_cs, inline=True, fontsize=10)
+
     fig.colorbar(ct)
     # fig.set_size_inches(18.5, 10.5)
     plt.show()
