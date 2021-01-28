@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.abspath('..')) ### --- added line
 from glob import glob
 
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mtick
 from whakaari import TremorData, ForecastModel, save_dataframe, load_dataframe
 from datetime import timedelta
 import numpy as np
@@ -574,7 +575,7 @@ def full_sweep(load_adr=None, load_acc=None, load_far=None):
         pp = timeline.drop(['ys', 'full_calibrated', 'calibrated_prediction'], axis='columns')
 
         thresholds = np.round(np.linspace(
-            0.005, 0.05, num=10, endpoint=True), 4)
+            0.005, 0.05, num=100, endpoint=True), 4)
         look_forwards = np.arange(1,7.5, step=0.5)
         alertday_ratios = dict()
         accuracies = dict()
@@ -598,9 +599,9 @@ def full_sweep(load_adr=None, load_acc=None, load_far=None):
         far_df = pd.DataFrame(falsealert_ratios,
                             index=[f'threshold_{th}'for th in thresholds]).add_prefix('lookforward_')
         far_df.index.name = "thresholds"
-        save_adr = f"{fm.rootdir}/calibration/heatmap/alertdayratios_df.csv"
-        save_acc = f"{fm.rootdir}/calibration/heatmap/accuracies_df.csv"
-        save_far = f"{fm.rootdir}/calibration/heatmap/falsealertratios_df.csv"
+        save_adr = f"{fm.rootdir}/calibration/contour/alertdayratios_df.csv"
+        save_acc = f"{fm.rootdir}/calibration/contour/accuracies_df.csv"
+        save_far = f"{fm.rootdir}/calibration/contour/falsealertratios_df.csv"
         save_dataframe(adr_df, save_adr)
         save_dataframe(acc_df, save_acc)
         save_dataframe(far_df, save_far)
@@ -654,9 +655,9 @@ def plot_contours():
                        look_forward=2., root=f'calibration_forecast_model', savefile_type='pkl')
     tes_pop = TremorData().tes
     tes_pop.pop(3) # remove hard earthquake
-    load_adr = f"{fm.rootdir}/calibration/heatmap/alertdayratios_df.csv"
-    load_acc = f"{fm.rootdir}/calibration/heatmap/accuracies_df.csv"
-    load_far = f"{fm.rootdir}/calibration/heatmap/falsealertratios_df.csv"
+    load_adr = f"{fm.rootdir}/calibration/contour/alertdayratios_df.csv"
+    load_acc = f"{fm.rootdir}/calibration/contour/accuracies_df.csv"
+    load_far = f"{fm.rootdir}/calibration/contour/falsealertratios_df.csv"
     adr_df, acc_df, far_df = full_sweep(
         load_adr=load_adr, load_acc=load_acc, load_far=load_far)
     # adr_df, acc_df, far_df = full_sweep()
@@ -675,33 +676,53 @@ def plot_contours():
 
     fig, axs = plt.subplots(1,2,figsize=(10.5,18.5/3),sharey=True)
     col_names = acc_df.columns.values
-    col_names = [x.split('_')[-1] for x in col_names]
+    col_names = [float(x.split('_')[-1]) for x in col_names]
     row_names = acc_df.index.values
-    row_names = [y.split('_')[-1] for y in row_names]
+    row_names = [float(y.split('_')[-1]) for y in row_names]
     z = acc_df.values
+
+    # Plot formatting
     for ax in axs:
-        ct = ax.contourf(col_names, row_names, z, colors=clist, levels=[i-.5 for i in range(6)], alpha=0.8)
+        ax.grid(lw=0.5)
+        ct = ax.contourf(col_names, row_names, z, colors=clist, levels=[i-.5 for i in range(6)], alpha=0.7)
         ax.tick_params(labelsize=8)
         ax.tick_params(axis='x', labelrotation=0.25)
-        ax.set_xlabel('Lookforwards', fontsize=12)
-    axs[0].set_ylabel('Thresholds', fontsize=12)
+        ax.set_xlabel('Lookforwards (days)', fontsize=12)
+        ax.locator_params(axis='y', tight=True, nbins=10)
+        ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1,decimals=1))
+    axs[0].set_ylabel('Probability Thresholds for alert', fontsize=12)
 
     adr_levels = np.linspace(0,0.4, num=10, endpoint=True)
     adr_vals = adr_df.values
     far_levels = [1,0.985,0.98,0.975,0.95,0.945]
     far_levels.sort()
     far_vals = far_df.values
-    axs[0].set_title('Alert Day Ratio', fontsize=24)
+
+    # Alert Day ratio contour lines
+    axs[0].set_title('Alert Day Ratio', fontsize=16)
     adr_cs=axs[0].contour(col_names, row_names, adr_vals, levels=adr_levels, colors='black')
-    axs[0].clabel(adr_cs, inline=True, fontsize=10)
+    # adr_cs=axs[0].contour(col_names, row_names, adr_vals, levels=adr_levels, cmap='Greys')
+    axs[0].clabel(adr_cs, inline=True, fontsize=8)
 
-    axs[1].set_title('False Alert Ratio', fontsize=24)
-    far_cs = axs[1].contour(col_names, row_names, far_vals, levels=far_levels, colors='black')
-    axs[1].clabel(far_cs, inline=True, fontsize=10)
+    # False Alert ratio contour lines
+    axs[1].set_title('False Alert Ratio', fontsize=16)
+    # far_cs = axs[1].contour(col_names, row_names, far_vals, levels=far_levels, colors='black')
+    far_cs = axs[1].contour(col_names, row_names, far_vals, levels=far_levels, cmap='Greys',vmin=0.5, vmax=1)
+    axs[1].clabel(far_cs, inline=True, fontsize=8)
 
-    fig.colorbar(ct)
+    # Pretty Colorbar formatting
+    cb=fig.colorbar(ct)
+    cb.ax.get_yaxis().set_ticks([])
+    _, cb_xm, _, cb_ym = cb.ax.axis()
+    for i in range(5):
+        cb.ax.text(2, i, i, ha='center', va='center')
+    cb.ax.get_yaxis().labelpad = 15
+    cb.ax.set_ylabel('# of detected eruptions', rotation=270)
     # fig.set_size_inches(18.5, 10.5)
-    plt.show()
+    # plt.show()
+    save_plot=f"{fm.rootdir}/calibration/contour/contour_v1.png"
+    plt.savefig(save_plot, format='png', dpi=300)
+    plt.close()
 
 
 if __name__ == '__main__':
