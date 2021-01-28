@@ -389,7 +389,7 @@ def get_alertdays(alerts, lf):
     return alert_days
 
 
-def get_falsealerts(alerts, lf, tes):
+def get_falsealerts(alerts, lf, tes, alertwindow=True):
     ''' Helper function to convert model alerts into false alert ratio
 
         This function assumes that alerts start on the time issued and end prior to the look forward
@@ -409,19 +409,43 @@ def get_falsealerts(alerts, lf, tes):
             ratio of false alerts : true alerts a.k.a. false alerts/all alerts
     '''
     alert_period = timedelta(days=lf)
-    modelalerts = alerts.loc[alerts == 1]
-    if len(modelalerts) == 0:
+    modelalerts_ind = alerts.loc[alerts == 1].index
+    if len(modelalerts_ind) == 0:
         return 0
-    falsealerts = 0
-    for al in modelalerts.index:
-        eruption=False
-        for te in tes:
-            if al <= te and te < al+alert_period:
-                eruption=True
-                break
-        if not eruption: falsealerts=falsealerts+1
 
-    falsealert_ratio = falsealerts/len(modelalerts)
+    falsealerts = 0
+    if alertwindow:
+        # david version of model alerts
+        # Create non-overlapping alert windows as list of (ti_j, tf_j+alert) for j in non overlapping
+        aw_ap = np.array([alert_period],dtype='timedelta64')[0] # Alert Window Alert Period
+        non_op_inds = np.where(np.diff(modelalerts_ind)>aw_ap)[0]
+        alert_windows = list(zip(
+            [modelalerts_ind[0],] +
+            [modelalerts_ind[i+1] for i in non_op_inds],
+            [modelalerts_ind[j] + aw_ap for j in non_op_inds] +
+            [modelalerts_ind[-1] + aw_ap]
+        ))
+
+        # Check for eruption detected
+        for aw in alert_windows:
+            eruption = False
+            for te in tes:
+                if aw[0] <= te and te < aw[1]:
+                    eruption = True
+                    break
+            if not eruption: falsealerts += 1
+        falsealert_ratio = falsealerts/len(alert_windows)
+    else:
+        # Stephen Version of model alerts
+        for al in modelalerts_ind:
+            eruption=False
+            for te in tes:
+                if al <= te and te < al+alert_period:
+                    eruption=True
+                    break
+            if not eruption: falsealerts+=1
+
+        falsealert_ratio = falsealerts/len(modelalerts_ind)
     return falsealert_ratio
 
 
@@ -601,7 +625,7 @@ def full_sweep(load_adr=None, load_acc=None, load_far=None):
         far_df.index.name = "thresholds"
         save_adr = f"{fm.rootdir}/calibration/contour/alertdayratios_df.csv"
         save_acc = f"{fm.rootdir}/calibration/contour/accuracies_df.csv"
-        save_far = f"{fm.rootdir}/calibration/contour/falsealertratios_df.csv"
+        save_far = f"{fm.rootdir}/calibration/contour/falsealertratios_windows_df.csv"
         save_dataframe(adr_df, save_adr)
         save_dataframe(acc_df, save_acc)
         save_dataframe(far_df, save_far)
@@ -658,9 +682,10 @@ def plot_contours():
     load_adr = f"{fm.rootdir}/calibration/contour/alertdayratios_df.csv"
     load_acc = f"{fm.rootdir}/calibration/contour/accuracies_df.csv"
     load_far = f"{fm.rootdir}/calibration/contour/falsealertratios_df.csv"
+    load_far = f"{fm.rootdir}/calibration/contour/falsealertratios_windows_df.csv"
     adr_df, acc_df, far_df = full_sweep(
         load_adr=load_adr, load_acc=load_acc, load_far=load_far)
-    # adr_df, acc_df, far_df = full_sweep()
+    # adr_df, acc_df, far_df = full_sweep() # Comment/Uncomment if need to create files
     acc_df = acc_df*len(tes_pop)
     acc_df = acc_df.astype(int)
     # colours here
@@ -694,7 +719,8 @@ def plot_contours():
 
     adr_levels = np.linspace(0,0.4, num=10, endpoint=True)
     adr_vals = adr_df.values
-    far_levels = [1,0.985,0.98,0.975,0.95,0.945]
+    # far_levels = [1,0.985,0.98,0.975,0.95,0.945]
+    far_levels = [0.96,0.95, 0.94,0.93,0.92]
     far_levels.sort()
     far_vals = far_df.values
 
@@ -706,8 +732,8 @@ def plot_contours():
 
     # False Alert ratio contour lines
     axs[1].set_title('False Alert Ratio', fontsize=16)
-    # far_cs = axs[1].contour(col_names, row_names, far_vals, levels=far_levels, colors='black')
-    far_cs = axs[1].contour(col_names, row_names, far_vals, levels=far_levels, cmap='Greys',vmin=0.5, vmax=1)
+    far_cs = axs[1].contour(col_names, row_names, far_vals, levels=far_levels, colors='black')
+    # far_cs = axs[1].contour(col_names, row_names, far_vals, levels=far_levels, cmap='Greys',vmin=0.5, vmax=1)
     axs[1].clabel(far_cs, inline=True, fontsize=8)
 
     # Pretty Colorbar formatting
@@ -720,7 +746,7 @@ def plot_contours():
     cb.ax.set_ylabel('# of detected eruptions', rotation=270)
     # fig.set_size_inches(18.5, 10.5)
     # plt.show()
-    save_plot=f"{fm.rootdir}/calibration/contour/contour_v1.png"
+    save_plot=f"{fm.rootdir}/calibration/contour/contour_v4.png"
     plt.savefig(save_plot, format='png', dpi=300)
     plt.close()
 
