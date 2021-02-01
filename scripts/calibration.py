@@ -375,6 +375,7 @@ def test_hires_calibration(plots=False, download_data=False):
     '''
     # set the available CPUs higher or lower as appropriate
     n_jobs = 3
+    ncl=500
 
     offset = timedelta(minutes=10)
 
@@ -416,7 +417,7 @@ def test_hires_calibration(plots=False, download_data=False):
     # fm_list = list()
     fm_dict = dict()
     for eruption_num in eruption_nums:
-        fm_dict[eruption_num] = train_one_forecast_model(tstart=tstart, tend=tend, eruption_num=eruption_num, n_jobs=n_jobs)
+        fm_dict[eruption_num] = train_one_forecast_model(tstart=tstart, tend=tend, eruption_num=eruption_num, n_jobs=n_jobs, ncl=ncl)
 
     # Store ti and tf in csv
     # with open(f"{fm_list[0].rootdir}/calibration/tis_and_tfs.csv", "w") as f:
@@ -444,19 +445,19 @@ def test_hires_calibration(plots=False, download_data=False):
 
     # This is the looping through weeks to get hires forecasts
     for fnum, ti in enumerate(tis):
-        if fnum < 110: continue # Skipping to  where fm got stuck
+        if fnum < 226: continue # Skipping to  where fm got stuck
         # Loop through each fm and do feature extraction, i.e. call hires_forecast()
         for e_num in eruption_nums:
-            iplot_name = f'{fm_dict[e_num].plotdir}/test_hires_forecast/interim_plots/hires_forecast__te_{e_num}__fnum_{fnum}__ti_{ti}.png'
-            print(f"fnum={fnum}, e_num={e_num}, plot_name={iplot_name}")
+            iplot_name = f'{fm_dict[e_num].plotdir}/test_hires_forecast/interim_plots/hires_forecast__te_{e_num}__fnum_{fnum:03}__ti_{ti}__ncl_{ncl}.png'
+            print(f"fnum={fnum:03}, e_num={e_num}, plot_name={iplot_name}")
             # forecast = fm_list[e_num].hires_forecast(ti=ti, tf=tfs[fnum], recalculate=True,
             #                   save=plot_name)
 
-            # Before each forecast download some data
+            hires_root = f"{fm_dict[e_num].root}_hires__fnum_{fnum:03}"
             forecast = fm_dict[e_num].hires_forecast(ti=ti, tf=tfs[fnum], recalculate=True,
-                                                    save=iplot_name)
+                                                    root=hires_root, save=iplot_name)
             forecast = forecast.loc[(ti <= forecast.index) & (forecast.index <= tfs[fnum])]
-            if_name = f'{fm_dict[e_num].rootdir}/calibration/interim_forecasts/te_{e_num}__fnum_{fnum:03}__ti_{ti}.pkl'
+            if_name = f'{fm_dict[e_num].rootdir}/calibration/interim_forecasts/te_{e_num}__fnum_{fnum:03}__ti_{ti}__ncl_{ncl}.pkl'
             save_dataframe(forecast, if_name, index_label='time')
             del forecast
         '''
@@ -497,7 +498,7 @@ def test_hires_calibration(plots=False, download_data=False):
         pass
 
 
-def train_one_forecast_model(tstart, tend, eruption_num=None, n_jobs=3, retrain=False):
+def train_one_forecast_model(tstart, tend, eruption_num=None, n_jobs=3, retrain=False, ncl=100):
     month = timedelta(days=365.25 / 12)
     # construct forecast model object from trained modeldir
     data_streams = ['rsam', 'mf', 'hf', 'dsar']
@@ -505,14 +506,14 @@ def train_one_forecast_model(tstart, tend, eruption_num=None, n_jobs=3, retrain=
     fm = ForecastModel(ti=tstart, tf=tend, window=2., overlap=0.75, n_jobs=n_jobs,
                        look_forward=2., data_streams=data_streams, root=f'calibration_forecast_model', savefile_type='pkl')
     # set modeldir but reuse features in root
-    fm.modeldir = f'{fm.modeldir}__te_{eruption_num}'
+    fm.modeldir = f'{fm.modeldir}__te_{eruption_num}__Ncl_{ncl}'
     if eruption_num is not None:
         exclude_range = construct_exclude_dates()[eruption_num]
         exclude_dates = [[exclude_range['ti'], exclude_range['tf']], ]
     else:
         exclude_dates = []
     fm.train(ti='2011-01-01', tf='2020-01-01', drop_features=drop_features, retrain=retrain,
-             exclude_dates=exclude_dates)
+             exclude_dates=exclude_dates, Ncl=ncl)
 
     return fm
 
