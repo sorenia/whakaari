@@ -756,10 +756,37 @@ def plot_contours(ncl=100):
     plt.close()
 
 
+def decompose_to_weeks(file, fnum_file):
+    ''' Combined featfile has "fnum_{fnum_start}to{fnum_end}"
+
+    Decompose featfile back into weeks for simplification of hires_forecasts()
+    '''
+    fnum_start = int(file.split("fnum_")[-1].split('to')[0])
+    fnum_end = int(file.split("fnum_")[-1].split('to')[-1].split('.pkl')[0])
+
+    df=load_dataframe(file)
+    fnums=load_dataframe(fnum_file)
+    for fnum in fnums.index:
+        if fnum <fnum_start: continue
+        if fnum >fnum_end: break
+        ti = fnums.iloc[fnum].ti
+        tf = fnums.iloc[fnum].tf
+        week = df.loc[(
+            df.index >= ti) & (df.index <= tf)]
+        f_save=f"{file.split('fnum_')[0]}fnum_{fnum:03}.pkl"
+        save_dataframe(week, f_save)
+    test = load_dataframe(f_save)
+    print(test.index)
+
+
 if __name__ == '__main__':
     # os.chdir('..')  # set working directory to root
     # calibration()
     # timeline_calibration()
     # full_sweep()
     # plot_heatmap()
-    plot_contours(ncl=500)
+    # plot_contours(ncl=500)
+    # plot_hires_contours(ncl=500)
+    decompose_to_weeks(
+        "/Users/teban/Documents/ADMIN/2020-21 Summer RA/sorenia_whakaari/features/calibration_forecast_model_hires_features__fnum_0to225.pkl",
+        "/Users/teban/Documents/ADMIN/2020-21 Summer RA/sorenia_whakaari/calibration/tis_and_tfs.csv")
