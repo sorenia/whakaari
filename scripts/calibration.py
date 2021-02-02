@@ -119,7 +119,7 @@ class MockForecastModel(BaseEstimator, ClassifierMixin):
         return accuracy_score(y, self.predict(X), sample_weight=sample_weight)
 
 
-def calibration(download_data=False, plots=True, eruption_num=4):
+def calibration(download_data=False, plots=True, eruption_num=4, ncl=100):
     # constants
     month = timedelta(days=365.25 / 12)
 
@@ -134,7 +134,7 @@ def calibration(download_data=False, plots=True, eruption_num=4):
                        look_forward=2., data_streams=data_streams, root=f'calibration_forecast_model', savefile_type='pkl')
 
     # set modeldir but reuse features in root
-    fm.modeldir = f'{fm.modeldir}__te_{eruption_num}'
+    fm.modeldir = f'{fm.modeldir}__te_{eruption_num}__ncl_{ncl}'
 
     # columns to manually drop from feature matrix because they are highly correlated to other
     # linear regressors
@@ -158,7 +158,7 @@ def calibration(download_data=False, plots=True, eruption_num=4):
         tf_test = fm.tf_model
         exclude_dates = []
     fm.train(ti='2011-01-01', tf='2020-01-01', drop_features=drop_features, retrain=True,
-             exclude_dates=exclude_dates, n_jobs=n_jobs)
+             exclude_dates=exclude_dates, n_jobs=n_jobs, Ncl=ncl)
 
     classifier = MockForecastModel(fm.modeldir)
 
@@ -216,7 +216,7 @@ def calibration(download_data=False, plots=True, eruption_num=4):
     X_full, y_full = fm._extract_features(ti=fm.ti_train, tf=fm.tf_train)
     predictions = pd.DataFrame({
         "time": X_full.index,
-        "calibrated_prediction": calibrated_classifier.predict_proba(X_full)[:, 1], # Calibrated_prediction is from CCCV
+        "calibrated_prediction": calibrated_classifier.predict_proba(X_full)[:, 1], # Calibrated_prediction is from CCCV NOTE: unused so could skip CCCV()
         "prediction": classifier.predict_proba(X_full)[:, 1],
     }).set_index('time')
 
@@ -230,7 +230,7 @@ def calibration(download_data=False, plots=True, eruption_num=4):
     return calibrator_dict
 
 
-def timeline_calibration():
+def timeline_calibration(ncl=100):
     '''Script to calibrate over the entire timeline
 
     1) Looped calls to calibration() to generate cccv for 5 eruptions
@@ -248,24 +248,24 @@ def timeline_calibration():
     # Generate and store forecast model outputs - Calibrators are there for later comparisons
     calibrators = list()
     for i in range(5):
-        calibrator = calibration(eruption_num=i, plots=False)
-        f_name = f"{fm.rootdir}/calibration/calibration_forecast_model__te_{i}.pkl"
+        calibrator = calibration(eruption_num=i, plots=False, ncl=ncl)
+        f_name = f"{fm.rootdir}/calibration/calibration_forecast_model__te_{i}__ncl_{ncl}.pkl"
         save_dataframe(calibrator['predictions'], f_name, index_label = 'time')
         calibrators.append(calibrator)
-    calibrator = calibration(eruption_num=None, plots=False)
-    f_name = f"{fm.rootdir}/calibration/calibration_forecast_model__te_None.pkl"
+    calibrator = calibration(eruption_num=None, plots=False, ncl=ncl)
+    f_name = f"{fm.rootdir}/calibration/calibration_forecast_model__te_None__ncl_{ncl}.pkl"
     save_dataframe(calibrator['predictions'], f_name, index_label = 'time')
     calibrators.append(calibrator)
 
     # construct timeline and insert the out of sample predictions
     month = timedelta(days=365.25 / 12)
-    f_load = f"{fm.rootdir}/calibration/calibration_forecast_model__te_None.pkl"
+    f_load = f"{fm.rootdir}/calibration/calibration_forecast_model__te_None__ncl_{ncl}.pkl"
     timeline = load_dataframe(f_load, index_col='time')
 
     for i, te in enumerate(TremorData().tes):
         ti_test = te-month
         tf_test = te+month
-        f_load = f"{fm.rootdir}/calibration/calibration_forecast_model__te_{i}.pkl"
+        f_load = f"{fm.rootdir}/calibration/calibration_forecast_model__te_{i}__ncl_{ncl}.pkl"
         load_df = load_dataframe(f_load, index_col='time')
         out_of_sample = load_df.loc[(load_df.index >= ti_test) & (load_df.index < tf_test)]
 
@@ -282,7 +282,7 @@ def timeline_calibration():
     timeline['full_calibrated'] = timeline['prediction'].apply(get_calibrated, a=a, b=b)
     timeline['ys'] = ys
 
-    f_save = f"{fm.rootdir}/calibration/{fm.root}__TIMELINE.pkl"
+    f_save = f"{fm.rootdir}/calibration/{fm.root}__TIMELINE__ncl_{ncl}.pkl"
     save_dataframe(timeline, f_save, index_label='time')
 
     # ==== plot of calibrated probabilities vs thresholds ====
@@ -297,8 +297,9 @@ def timeline_calibration():
         t.set_fontsize(20.)
 
     os.makedirs(fm.plotdir, exist_ok=True)
-    plt.savefig(f"{fm.plotdir}/threshold_vs_probability__timeline.png", format='png', dpi=300)
+    plt.savefig(f"{fm.plotdir}/threshold_vs_probability__timeline__ncl_{ncl}.png", format='png', dpi=300)
     plt.close()
+    return timeline
 
 
 def _sigmoid_calibration(df, y, sample_weight=None):
@@ -455,27 +456,31 @@ def get_truealerts(alerts, lf, tes):
     return 1-get_falsealerts(alerts, lf, tes)
 
 
-def construct_timeline():
+def construct_timeline(ncl=100):
     data_streams = ['rsam', 'mf', 'hf', 'dsar']
     fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
                        look_forward=2., data_streams=data_streams, root=f'calibration_forecast_model', savefile_type='pkl')
 
     try:
-        f_load = f"{fm.rootdir}/calibration/{fm.root}__TIMELINE.pkl"
+        f_load = f"{fm.rootdir}/calibration/{fm.root}__TIMELINE__ncl_{ncl}.pkl"
         timeline = load_dataframe(f_load, index_col='time')
         return timeline
     except FileNotFoundError:
         print(f"file {f_load} not found... constructing timeline")
 
-    # construct timeline and insert the out of sample predictions
-    month = timedelta(days=365.25 / 12)
-    f_load = f"{fm.rootdir}/calibration/{fm.root}__te_None.pkl"
-    timeline = load_dataframe(f_load, index_col='time')
+    # construct TIMELINE and insert the out of sample predictions NOTE: Assumes timeline_calibration() has been run
+    try:
+        f_load = f"{fm.rootdir}/calibration/{fm.root}__te_None__ncl_{ncl}.pkl"
+        timeline = load_dataframe(f_load, index_col='time')
+    except FileNotFoundError:
+        print(f"file {f_load} not found... constructing forecast models from timeline_calibration()")
+        timeline = timeline_calibration(ncl=ncl)
 
+    month = timedelta(days=365.25 / 12)
     for i, te in enumerate(TremorData().tes):
         ti_test = te-month
         tf_test = te+month
-        f_load = f"{fm.rootdir}/calibration/{fm.root}__te_{i}.pkl"
+        f_load = f"{fm.rootdir}/calibration/{fm.root}__te_{i}__ncl_{ncl}.pkl"
         load_df = load_dataframe(f_load, index_col='time')
         out_of_sample = load_df.loc[(
             load_df.index >= ti_test) & (load_df.index < tf_test)]
@@ -487,14 +492,14 @@ def construct_timeline():
     ys = pd.DataFrame(fm._get_label(timeline.index.values),
                       columns=['label'], index=timeline.index)
     a, b = _sigmoid_calibration(timeline.prediction, ys)
-    with open(f"{fm.rootdir}/calibration/sigmoid_parameters__full_calibrated.csv", "w") as f:
+    with open(f"{fm.rootdir}/calibration/sigmoid_parameters__full_calibrated__ncl_{ncl}.csv", "w") as f:
         f.write(f"a,b\n{a},{b}")
 
     timeline['full_calibrated'] = timeline['prediction'].apply(
         get_calibrated, a=a, b=b)
     timeline['ys'] = ys
 
-    f_save = f"{fm.rootdir}/calibration/{fm.root}__TIMELINE.pkl"
+    f_save = f"{fm.rootdir}/calibration/{fm.root}__TIMELINE__ncl_{ncl}.pkl"
     save_dataframe(timeline, f_save, index_label='time')
     return timeline
 
@@ -577,7 +582,7 @@ def single_sweep(pp, ys, tes, lf=2., thresholds=[0.005, 0.05], inplace=False):
         return alertday_ratios, accuracies, falsealert_ratios, thresholds, pp
 
 
-def full_sweep(load_adr=None, load_acc=None, load_far=None):
+def full_sweep(load_adr=None, load_acc=None, load_far=None, ncl=100):
     ''' This function does every sweep of lookforwards and probability thresholds
 
     Generates heatmap of lookforwards and probability thresholds
@@ -595,7 +600,7 @@ def full_sweep(load_adr=None, load_acc=None, load_far=None):
     else:
         tes_pop = TremorData().tes
         tes_pop.pop(3) # remove hard earthquake
-        timeline = construct_timeline()
+        timeline = construct_timeline(ncl=ncl)
         pp = timeline.drop(['ys', 'full_calibrated', 'calibrated_prediction'], axis='columns')
 
         thresholds = np.round(np.linspace(
@@ -623,9 +628,9 @@ def full_sweep(load_adr=None, load_acc=None, load_far=None):
         far_df = pd.DataFrame(falsealert_ratios,
                             index=[f'threshold_{th}'for th in thresholds]).add_prefix('lookforward_')
         far_df.index.name = "thresholds"
-        save_adr = f"{fm.rootdir}/calibration/contour/alertdayratios_df.csv"
-        save_acc = f"{fm.rootdir}/calibration/contour/accuracies_df.csv"
-        save_far = f"{fm.rootdir}/calibration/contour/falsealertratios_windows_df.csv"
+        save_adr = f"{fm.rootdir}/calibration/contour/alertdayratios_df__ncl_{ncl}.csv"
+        save_acc = f"{fm.rootdir}/calibration/contour/accuracies_df__ncl_{ncl}.csv"
+        save_far = f"{fm.rootdir}/calibration/contour/falsealertratios_windows_df__ncl_{ncl}.csv"
         save_dataframe(adr_df, save_adr)
         save_dataframe(acc_df, save_acc)
         save_dataframe(far_df, save_far)
@@ -668,7 +673,7 @@ def plot_heatmap():
     plt.show()
 
 
-def plot_contours():
+def plot_contours(ncl=100):
     ''' This function calls full_sweep() with saved dataframes then creates contour plot
 
     Try some more formatting using
@@ -679,13 +684,13 @@ def plot_contours():
                        look_forward=2., root=f'calibration_forecast_model', savefile_type='pkl')
     tes_pop = TremorData().tes
     tes_pop.pop(3) # remove hard earthquake
-    load_adr = f"{fm.rootdir}/calibration/contour/alertdayratios_df.csv"
-    load_acc = f"{fm.rootdir}/calibration/contour/accuracies_df.csv"
-    load_far = f"{fm.rootdir}/calibration/contour/falsealertratios_df.csv"
-    load_far = f"{fm.rootdir}/calibration/contour/falsealertratios_windows_df.csv"
-    adr_df, acc_df, far_df = full_sweep(
-        load_adr=load_adr, load_acc=load_acc, load_far=load_far)
-    # adr_df, acc_df, far_df = full_sweep() # Comment/Uncomment if need to create files
+    # load_adr = f"{fm.rootdir}/calibration/contour/alertdayratios_df.csv"
+    # load_acc = f"{fm.rootdir}/calibration/contour/accuracies_df.csv"
+    # load_far = f"{fm.rootdir}/calibration/contour/falsealertratios_df.csv"
+    # load_far = f"{fm.rootdir}/calibration/contour/falsealertratios_windows_df.csv"
+    # adr_df, acc_df, far_df = full_sweep(
+    #     load_adr=load_adr, load_acc=load_acc, load_far=load_far)
+    adr_df, acc_df, far_df = full_sweep(ncl=ncl) # Comment/Uncomment if need to create files
     acc_df = acc_df*len(tes_pop)
     acc_df = acc_df.astype(int)
     # colours here
@@ -746,7 +751,7 @@ def plot_contours():
     cb.ax.set_ylabel('# of detected eruptions', rotation=270)
     # fig.set_size_inches(18.5, 10.5)
     # plt.show()
-    save_plot=f"{fm.rootdir}/calibration/contour/contour_v4.png"
+    save_plot=f"{fm.rootdir}/calibration/contour/contour_v6__ncl_{ncl}.png"
     plt.savefig(save_plot, format='png', dpi=300)
     plt.close()
 
@@ -757,4 +762,4 @@ if __name__ == '__main__':
     # timeline_calibration()
     # full_sweep()
     # plot_heatmap()
-    plot_contours()
+    plot_contours(ncl=500)
