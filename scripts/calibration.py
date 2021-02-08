@@ -6,7 +6,7 @@ from glob import glob
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
-from whakaari import TremorData, ForecastModel, save_dataframe, load_dataframe
+from whakaari import TremorData, ForecastModel, save_dataframe, load_dataframe, makedir
 from datetime import timedelta
 import numpy as np
 import pandas as pd
@@ -236,7 +236,7 @@ def timeline_calibration(ncl=100):
     1) Looped calls to calibration() to generate cccv for 5 eruptions
     2) Temporarily Store calibrator and test_ti, test_tf
     3) Produce full timeline of predictions [from calibration()]
-        a) average where no test data
+        a) te=None where no test data
         b) insert holdout test performance
     4) generate plot?
     '''
@@ -504,6 +504,72 @@ def construct_timeline(ncl=100):
     return timeline
 
 
+def construct_hires_timeline(ncl=100, n_jobs=3):
+    '''
+    Pseudocode:
+    1. Train 1 base model with 500 classifiers on the lores data
+    2. for week in weeks: generate hires forecast for week using base model named hires_forecast_weekX
+    3. Concatenate all forecasts for weekX
+    4. Calibrate the forecasts
+    '''
+    # month = timedelta(days=365.25 / 12)
+    data_streams = ['rsam', 'mf', 'hf', 'dsar']
+    fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
+                       look_forward=2., data_streams=data_streams, root=f'calibration_forecast_model', savefile_type='pkl')
+    # set model dir
+    fm.modeldir = f'{fm.modeldir}__te_{None}__ncl_{ncl}'
+    # columns to manually drop from feature matrix because they are highly correlated to other
+    # linear regressors
+    drop_features = ['linear_trend_timewise', 'agg_linear_trend']
+
+    # Train fm on lores data no exclude dates
+    fm.train(ti='2011-01-01', tf='2020-01-01', drop_features=drop_features, retrain=False,
+             n_jobs=n_jobs, Ncl=ncl)
+
+    # Initialise the hires feature paths
+    feature_paths = glob(f'{fm.featdir}/{fm.root}_hires__fnum_*_features.pkl')
+    feature_paths.sort()
+
+    # Initialise MockForecastModel() for the convenient .predict_proba()
+    classifier = MockForecastModel(fm.modeldir)
+
+    pp_dir = f"{fm.rootdir}/calibration/{fm.root}_hires_predictions"
+    makedir(pp_dir)
+    df_list = list()
+    for feat_file in feature_paths:
+        # get hires features and labels for eruption not used in training
+        X = load_dataframe(feat_file)
+        fnum = int(feat_file.split("fnum_")[-1].split('_features.pkl')[0])
+
+        # Check here for which model to use
+        model = fm.modeldir.split('__te_')[-1]
+
+        # save the indices of the columns corresponding to features for each tree
+        classifier.prepare_for_calibration(X)
+
+        # Calculate raw predict_proba and take the 1 column
+        pp = classifier.predict_proba(X)[:,1]
+
+        # make a dataframe (could be slow and have speed improvements later)
+        df = pd.DataFrame({'prediction': pp,},
+                index=X.index)
+        f_save = f"{pp_dir}/fnum_{fnum:03}__MODEL_te_{model}.pkl"
+        save_dataframe(df, f_save)
+        df_list.append(df)
+
+    timeline = pd.concat(df_list)
+    f_save = f"{fm.rootdir}/calibration/{fm.root}__hires_test__TIMELINE__ncl_{ncl}__ti_{timeline.index[0]}__tf_{timeline.index[-1]}.pkl"
+    save_dataframe(timeline, f_save, index_label='time')
+
+    # run base sigmoid calibration
+    ys = pd.DataFrame(fm._get_label(timeline.index.values),
+                      columns=['label'], index=timeline.index)
+    a, b = _sigmoid_calibration(timeline.prediction, ys)
+    with open(f"{fm.rootdir}/calibration/sigmoid_parameters__hires_test__ncl_{ncl}.csv", "w") as f:
+        f.write(f"a,b\n{a},{b}")
+    return timeline
+
+
 def single_sweep(pp, ys, tes, lf=2., thresholds=[0.005, 0.05], inplace=False):
     ''' This function takes a timeline of predict_proba(), ys and probability thresholds
 
@@ -582,7 +648,7 @@ def single_sweep(pp, ys, tes, lf=2., thresholds=[0.005, 0.05], inplace=False):
         return alertday_ratios, accuracies, falsealert_ratios, thresholds, pp
 
 
-def full_sweep(load_adr=None, load_acc=None, load_far=None, ncl=100):
+def full_sweep(loaddir=None, ncl=100, savedir=None, hires=False):
     ''' This function does every sweep of lookforwards and probability thresholds
 
     Generates heatmap of lookforwards and probability thresholds
@@ -591,8 +657,11 @@ def full_sweep(load_adr=None, load_acc=None, load_far=None, ncl=100):
 
     This function is also where you sat
     '''
-    if load_adr is not None and load_acc is not None and load_far is not None:
+    if loaddir is not None:
         # load files from dir
+        load_adr = f"{loaddir}/alertdayratios_df__ncl_{ncl}.csv"
+        load_acc = f"{loaddir}/accuracies_df__ncl_{ncl}.csv"
+        load_far = f"{loaddir}/falsealertratios_windows_df__ncl_{ncl}.csv"
         adr_df = load_dataframe(load_adr, index_col="thresholds")
         acc_df = load_dataframe(load_acc, index_col="thresholds")
         far_df = load_dataframe(load_far, index_col="thresholds")
@@ -600,12 +669,17 @@ def full_sweep(load_adr=None, load_acc=None, load_far=None, ncl=100):
     else:
         tes_pop = TremorData().tes
         tes_pop.pop(3) # remove hard earthquake
-        timeline = construct_timeline(ncl=ncl)
-        pp = timeline.drop(['ys', 'full_calibrated', 'calibrated_prediction'], axis='columns')
+        if hires:
+            pp = construct_hires_timeline(ncl=ncl)
+            look_forwards = np.round(np.linspace(0.5,7.5,endpoint=True,num=100),4)
+        else:
+            timeline = construct_timeline(ncl=ncl)
+            pp = timeline.drop(['ys', 'full_calibrated', 'calibrated_prediction'], axis='columns')
+            look_forwards = np.arange(1,7.5, step=0.5)
 
         thresholds = np.round(np.linspace(
             0.005, 0.05, num=100, endpoint=True), 4)
-        look_forwards = np.arange(1,7.5, step=0.5)
+
         alertday_ratios = dict()
         accuracies = dict()
         falsealert_ratios = dict()
@@ -628,9 +702,14 @@ def full_sweep(load_adr=None, load_acc=None, load_far=None, ncl=100):
         far_df = pd.DataFrame(falsealert_ratios,
                             index=[f'threshold_{th}'for th in thresholds]).add_prefix('lookforward_')
         far_df.index.name = "thresholds"
-        save_adr = f"{fm.rootdir}/calibration/contour/alertdayratios_df__ncl_{ncl}.csv"
-        save_acc = f"{fm.rootdir}/calibration/contour/accuracies_df__ncl_{ncl}.csv"
-        save_far = f"{fm.rootdir}/calibration/contour/falsealertratios_windows_df__ncl_{ncl}.csv"
+
+        if savedir is None: savedir = f"{fm.rootdir}/calibration/contour"
+        makedir(savedir)
+
+        save_adr = f"{savedir}/alertdayratios_df__ncl_{ncl}.csv"
+        save_acc = f"{savedir}/accuracies_df__ncl_{ncl}.csv"
+        save_far = f"{savedir}/falsealertratios_windows_df__ncl_{ncl}.csv"
+
         save_dataframe(adr_df, save_adr)
         save_dataframe(acc_df, save_acc)
         save_dataframe(far_df, save_far)
@@ -756,15 +835,89 @@ def plot_contours(ncl=100):
     plt.close()
 
 
-def decompose_to_weeks(file, fnum_file):
+def plot_hires_contours(ncl=100):
+    ''' This function calls full_sweep() with saved dataframes then creates contour plot
+
+    Try some more formatting using
+    colorbar - https://stackoverflow.com/questions/15908371/matplotlib-colorbars-and-its-text-labels 
+    contours - https://matplotlib.org/3.1.1/gallery/images_contours_and_fields/contour_label_demo.html#sphx-glr-gallery-images-contours-and-fields-contour-label-demo-py
+    '''
+    fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
+                       look_forward=2., root=f'calibration_forecast_model', savefile_type='pkl')
+    tes_pop = TremorData().tes
+    tes_pop.pop(3) # remove hard earthquake
+    adr_df, acc_df, far_df = full_sweep(ncl=ncl, hires=True)
+    acc_df = acc_df*len(tes_pop)
+    acc_df = acc_df.astype(int)
+    # colours here
+    cmap_dict = {
+        "0": "tab:gray",
+        "1": "tab:red",
+        "2": "tab:orange",
+        "3": "tab:blue",
+        "4": "tab:green",
+    }
+
+    clist= [v for k,v in cmap_dict.items()]
+
+    fig, axs = plt.subplots(1,2,figsize=(10.5,18.5/3),sharey=True)
+    col_names = acc_df.columns.values
+    col_names = [float(x.split('_')[-1]) for x in col_names]
+    row_names = acc_df.index.values
+    row_names = [float(y.split('_')[-1]) for y in row_names]
+    z = acc_df.values
+
+    # Plot formatting
+    for ax in axs:
+        ax.grid(lw=0.5)
+        ct = ax.contourf(col_names, row_names, z, colors=clist, levels=[i-.5 for i in range(6)], alpha=0.7)
+        ax.tick_params(labelsize=8)
+        ax.tick_params(axis='x', labelrotation=0.25)
+        ax.set_xlabel('Lookforwards (days)', fontsize=12)
+        ax.locator_params(axis='y', tight=True, nbins=10)
+        ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1,decimals=1))
+    axs[0].set_ylabel('Probability Thresholds for alert', fontsize=12)
+
+    adr_levels = np.linspace(0,0.4, num=10, endpoint=True)
+    adr_vals = adr_df.values
+    far_levels = [0.96,0.95, 0.94,0.93,0.92]
+    far_levels.sort()
+    far_vals = far_df.values
+
+    # Alert Day ratio contour lines
+    axs[0].set_title('Alert Day Ratio', fontsize=16)
+    adr_cs=axs[0].contour(col_names, row_names, adr_vals, levels=adr_levels, colors='black')
+    # adr_cs=axs[0].contour(col_names, row_names, adr_vals, levels=adr_levels, cmap='Greys')
+    axs[0].clabel(adr_cs, inline=True, fontsize=8)
+
+    # False Alert ratio contour lines
+    axs[1].set_title('False Alert Ratio', fontsize=16)
+    far_cs = axs[1].contour(col_names, row_names, far_vals, levels=far_levels, colors='black')
+    # far_cs = axs[1].contour(col_names, row_names, far_vals, levels=far_levels, cmap='Greys',vmin=0.5, vmax=1)
+    axs[1].clabel(far_cs, inline=True, fontsize=8)
+
+    # Pretty Colorbar formatting
+    cb=fig.colorbar(ct)
+    cb.ax.get_yaxis().set_ticks([])
+    _, cb_xm, _, cb_ym = cb.ax.axis()
+    for i in range(5):
+        cb.ax.text(2, i, i, ha='center', va='center')
+    cb.ax.get_yaxis().labelpad = 15
+    cb.ax.set_ylabel('# of detected eruptions', rotation=270)
+    save_plot=f"{fm.rootdir}/calibration/contour/hires_contour_test__ncl_{ncl}.png"
+    plt.savefig(save_plot, format='png', dpi=300)
+    plt.close()
+
+
+def decompose_to_weeks(filename, fnum_file):
     ''' Combined featfile has "fnum_{fnum_start}to{fnum_end}"
 
     Decompose featfile back into weeks for simplification of hires_forecasts()
     '''
-    fnum_start = int(file.split("fnum_")[-1].split('to')[0])
-    fnum_end = int(file.split("fnum_")[-1].split('to')[-1].split('.pkl')[0])
+    fnum_start = int(filename.split("fnum_")[-1].split('to')[0])
+    fnum_end = int(filename.split("fnum_")[-1].split('to')[-1].split('.pkl')[0])
 
-    df=load_dataframe(file)
+    df=load_dataframe(filename)
     fnums=load_dataframe(fnum_file)
     for fnum in fnums.index:
         if fnum <fnum_start: continue
@@ -773,7 +926,7 @@ def decompose_to_weeks(file, fnum_file):
         tf = fnums.iloc[fnum].tf
         week = df.loc[(
             df.index >= ti) & (df.index <= tf)]
-        f_save=f"{file.split('fnum_')[0]}fnum_{fnum:03}.pkl"
+        f_save=f"{filename.split('_features__fnum_')[0]}__fnum_{fnum:03}_features.pkl"
         save_dataframe(week, f_save)
     test = load_dataframe(f_save)
     print(test.index)
@@ -785,8 +938,8 @@ if __name__ == '__main__':
     # timeline_calibration()
     # full_sweep()
     # plot_heatmap()
-    # plot_contours(ncl=500)
-    # plot_hires_contours(ncl=500)
-    decompose_to_weeks(
-        "/Users/teban/Documents/ADMIN/2020-21 Summer RA/sorenia_whakaari/features/calibration_forecast_model_hires_features__fnum_0to225.pkl",
-        "/Users/teban/Documents/ADMIN/2020-21 Summer RA/sorenia_whakaari/calibration/tis_and_tfs.csv")
+    # # plot_contours(ncl=500)
+    # decompose_to_weeks(
+    #     "/Users/teban/Documents/ADMIN/2020-21 Summer RA/PROGS/week7 - hires contour plots/calibration_forecast_model_hires_features__fnum_0to225.pkl",
+    #     "/Users/teban/Documents/ADMIN/2020-21 Summer RA/sorenia_whakaari/calibration/tis_and_tfs.csv")
+    plot_hires_contours(ncl=100)
