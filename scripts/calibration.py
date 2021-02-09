@@ -366,7 +366,7 @@ def get_calibrated(prediction, a, b):
     return expit(-(a * prediction + b))
 
 
-def get_alertdays(alerts, lf):
+def get_alertdays(alerts, lf, alertwindow=True):
     ''' Helper function to convert model alerts into alert days
 
         Parameters:
@@ -382,11 +382,31 @@ def get_alertdays(alerts, lf):
             thresholds used for calculating
     '''
     alert_period = timedelta(days=lf)
+    modelalerts_time = alerts.loc[alerts == 1].index
     alert_days = alerts.copy()
-    als = alert_days.loc[alert_days == 1]
-    for al in als.index:
-        start = al
-        alert_days.loc[start:start+alert_period] = 1
+
+    if len(modelalerts_time) == 0:
+        return 0
+
+    if alertwindow:
+        # david version of model alerts
+        # Create non-overlapping alert windows as list of (ti_j, tf_j+alert) for j in non overlapping
+        aw_ap = np.array([alert_period],dtype='timedelta64')[0] # Alert Window Alert Period
+        non_op_inds = np.where(np.diff(modelalerts_time)>aw_ap)[0]
+        alert_windows = list(zip(
+            [modelalerts_time[0],] +
+            [modelalerts_time[i+1] for i in non_op_inds],
+            [modelalerts_time[j] + aw_ap for j in non_op_inds] +
+            [modelalerts_time[-1] + aw_ap]
+        ))
+
+        # Construct alerts np.array
+        ad_inds = [alert_days.loc[aw[0]:aw[1]].index for aw in alert_windows]
+        alert_days.loc[np.concatenate(ad_inds)] = 1
+    else:
+        for al in modelalerts_time:
+            start = al
+            alert_days.loc[start:start+alert_period] = 1
     return alert_days
 
 
