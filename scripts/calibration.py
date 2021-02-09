@@ -476,6 +476,85 @@ def get_truealerts(alerts, lf, tes):
     return 1-get_falsealerts(alerts, lf, tes)
 
 
+def compute_model_alerts(alerts, lf, tes):
+    alert_period = timedelta(days=lf)
+    modelalerts_time = alerts.loc[alerts == 1].index
+    if len(modelalerts_time) == 0:
+        model_alerts = {
+            'false_alert' : 0,
+            'missed' : len(tes),
+            'true_alert' : 0,
+            'true_negative' : int(1e8),
+            'dur' : 0,
+            'mcc' : 0,
+        }
+        return model_alerts
+
+    falsealerts = 0
+
+    # Create non-overlapping alert windows as list of (t0_j, t1_j+alert) for j in non overlapping
+    aw_ap = np.array([alert_period],dtype='timedelta64')[0] # Alert Window Alert Period
+    non_op_inds = np.where(np.diff(modelalerts_time)>aw_ap)[0]
+    alert_windows = list(zip(
+        [modelalerts_time[0],] +
+        [modelalerts_time[i+1] for i in non_op_inds],
+        [modelalerts_time[j] + aw_ap for j in non_op_inds] +
+        [modelalerts_time[-1] + aw_ap]
+    ))
+
+    alert_window_lengths = [np.diff(aw) for aw in alert_windows]
+    pop_tes = tes.copy()
+    true_alert = 0
+    false_alert = 0
+    inalert = 0.
+    missed = 0
+    total_time = (alerts.index[-1] - alerts.index[0]).total_seconds()
+
+    # dti = timedelta(days=(1-self.overlap)*self.window) # _model_alerts uses dti to distinguish hires/lores
+
+    # Check for eruption detected
+    for t0, t1 in alert_windows:
+
+        inalert += ((t1-t0)).total_seconds() # fm._model_alerts() uses indices, here uses datetime directly
+        # no eruptions left to classify, only misclassifications now
+        if len(pop_tes) == 0:
+            false_alert += 1
+            continue
+
+        # eruption has been missed
+        while pop_tes[0] < t0:
+            pop_tes.pop(0)
+            missed += 1
+            if len(pop_tes) == 0:
+                break
+        if len(pop_tes) == 0: # Continue loop after popping the final eruption in list
+            continue
+
+        # alert does NOT contain any eruption, move to next alert window
+        if not (t0 < pop_tes[0]  and pop_tes[0] <= t1):
+            false_alert += 1
+            continue
+
+        # alert window contains eruption(s), check for more eruptions, else move to next alert window
+        while pop_tes[0] > t0 and pop_tes[0] <= t1:
+            pop_tes.pop(0)
+            true_alert += 1
+            if len(pop_tes) == 0:
+                break
+    # any remaining eruptions after alert windows must have been missed
+    missed += len(tes)
+
+    model_alerts = {
+        'false_alert' : false_alert,
+        'missed' : missed,
+        'true_alert' : true_alert,
+        # 'true_negative' : int((len(alerts)-np.sum(alert_window_lengths))/np.mean(alert_window_lengths))-missed,
+        'dur' : inalert/total_time,
+        # 'mcc' : mcc,
+    }
+    return model_alerts
+
+
 def construct_timeline(ncl=100):
     data_streams = ['rsam', 'mf', 'hf', 'dsar']
     fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
@@ -644,22 +723,29 @@ def single_sweep(pp, ys, tes, lf=2., thresholds=[0.005, 0.05], inplace=False):
         alerts = pp[cal_string] >= th
         pp[al_string] = alerts.astype(int)
 
-        # alert day mask
-        ald_string = f'alert_days__lf_{lf}__th_{th}'
-        pp[ald_string] = get_alertdays(pp[al_string], lf)
+        # # alert day mask
+        # ald_string = f'alert_days__lf_{lf}__th_{th}'
+        # pp[ald_string] = get_alertdays(pp[al_string], lf)
 
-        # Calculation of ratios and accuracies
-        alertday_ratios.append(pp[ald_string].sum() / pp[ald_string].count())
+        # # Calculation of ratios and accuracies
+        # alertday_ratios.append(pp[ald_string].sum() / pp[ald_string].count())
 
-        # calculate accuracy here by looping through tes and incrementing count
-        correct = 0
-        for te in tes:
-            last_alert = pp.loc[pp.index<=te][ald_string].iloc[-1]
-            if last_alert == 1: correct = correct+1
-        accuracies.append(correct/len_tes)
+        # # calculate accuracy here by looping through tes and incrementing count
+        # correct = 0
+        # for te in tes:
+        #     last_alert = pp.loc[pp.index<=te][ald_string].iloc[-1]
+        #     if last_alert == 1: correct = correct+1
+        # accuracies.append(correct/len_tes)
 
-        # Calculate false alarm rate
-        falsealert_ratios.append(get_falsealerts(pp[al_string], lf, tes))
+        # # Calculate false alarm rate
+        # falsealert_ratios.append(get_falsealerts(pp[al_string], lf, tes))
+
+        # MODEL ALERTS
+        ma = compute_model_alerts(pp[al_string], lf, tes)
+        alertday_ratios.append(ma['dur'])
+        accuracies.append(ma['true_alert']/len(tes))
+        falsealert_ratios.append(ma['false_alert'] / (ma['false_alert'] + ma['true_alert']))
+
 
     # NOTE: considering switching the return statement to a single dict + pp (if required)
     if inplace:
