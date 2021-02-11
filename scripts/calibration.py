@@ -23,6 +23,9 @@ from scipy.special import xlogy
 from scipy.optimize import fmin_bfgs
 from math import log
 
+# For progress bar
+from tqdm import tqdm
+
 # new class to mock the forecast_model class
 class MockForecastModel(BaseEstimator, ClassifierMixin):
 
@@ -603,61 +606,114 @@ def construct_timeline(ncl=100):
     return timeline
 
 
+def construct_test_dates():
+    ''' Easily create test dates for each side of the eruption
+
+    returns list of dicts
+    '''
+    # Initialise list of te and Tremor dates
+    tes = TremorData().tes
+    month = timedelta(days=365.25 / 12)
+    exclude_dates = list()
+    for te in tes:
+        exclude_dates.append({'ti':te-month, 'tf':te+month})
+    return exclude_dates
+
+
+def which_eruption(start, end, test_times=construct_test_dates()):
+        '''takes start/end as datetime and list of test_times constructed using construct_test_dates()
+
+        returns eruption value in eruption_nums
+        '''
+        # Biased towards earlier eruptions
+        for i, t_time in enumerate(test_times):
+            # Check if start time falls within any of the testing period
+            if t_time['ti'] <= start < t_time['tf']:
+                return i
+            # Check if end time falls within any of the testing period
+            if t_time['ti'] <= end < t_time['tf']:
+                return i
+        return None
+
+
 def construct_hires_timeline(ncl=100, n_jobs=3):
     '''
     Pseudocode:
-    1. Train 1 base model with 500 classifiers on the lores data
-    2. for week in weeks: generate hires forecast for week using base model named hires_forecast_weekX
-    3. Concatenate all forecasts for weekX
-    4. Calibrate the forecasts
+    1. Train ALL models with 500 classifiers on the lores data + Create MockForecastModels (for mockfm.predict_proba())
+    2. for week in weeks: generate hires forecast for week using model based on first time on index named hires_forecast_weekX
+    3. Concatenate all weekly forecasts
+    4. Calibrate the forecasts <= NOT NEEDED see single_sweep()
     '''
-    # month = timedelta(days=365.25 / 12)
+
+    month = timedelta(days=365.25 / 12)
     data_streams = ['rsam', 'mf', 'hf', 'dsar']
     fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
                        look_forward=2., data_streams=data_streams, root=f'calibration_forecast_model', savefile_type='pkl')
-    # set model dir
-    fm.modeldir = f'{fm.modeldir}__te_{None}__ncl_{ncl}'
+    f_load = f"{fm.rootdir}/calibration/{fm.root}__hires_test__TIMELINE__ncl_{ncl}.pkl"
+    if os.path.isfile(f_load):
+        return load_dataframe(f_load, index_col='time')
     # columns to manually drop from feature matrix because they are highly correlated to other
     # linear regressors
     drop_features = ['linear_trend_timewise', 'agg_linear_trend']
 
-    # Train fm on lores data no exclude dates
-    fm.train(ti='2011-01-01', tf='2020-01-01', drop_features=drop_features, retrain=False,
-             n_jobs=n_jobs, Ncl=ncl)
+    # Train ALL models
+    td = TremorData()
+    eruption_nums = [None, 0, 1, 2, 3, 4]
+    for enum in eruption_nums:
+        # Setting exclude dates
+        if enum is None: # Rearranged for readability
+            te = None # Initialised in calibration() for plotting
+            ti_test = fm.ti_model
+            tf_test = fm.tf_model
+            exclude_dates = [] # No dates to exclude
+        else:
+            te = td.tes[enum] # Initialised in calibration() for plotting
+            ti_test = te-month
+            tf_test = te+month
+            exclude_dates = [[ti_test, tf_test], ]
+        # initialise _fm and set model dir
+        _fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
+                       look_forward=2., data_streams=data_streams, root=f'calibration_forecast_model', savefile_type='pkl')
+        _fm.modeldir = f'{fm.modeldir}__te_{enum}__ncl_{ncl}' # Based off above fm
+        # Train fm on lores data no exclude dates
+        _fm.train(ti='2011-01-01', tf='2020-01-01', drop_features=drop_features, retrain=False,
+                exclude_dates=exclude_dates, n_jobs=n_jobs, Ncl=ncl)
 
     # Initialise the hires feature paths
     feature_paths = glob(f'{fm.featdir}/{fm.root}_hires__fnum_*_features.pkl')
     feature_paths.sort()
 
-    # Initialise MockForecastModel() for the convenient .predict_proba()
-    classifier = MockForecastModel(fm.modeldir)
+    # Initialise ALL MockForecastModel() for the convenient .predict_proba() // Consider combining with above loop
+    classifiers = dict()
+    for enum in eruption_nums:
+        classifiers[enum] = MockForecastModel(f'{fm.modeldir}__te_{enum}__ncl_{ncl}')
 
-    pp_dir = f"{fm.rootdir}/calibration/{fm.root}_hires_predictions"
+    pp_dir = f"{fm.rootdir}/calibration/{fm.root}_hires_predictions__with_insertions"
     makedir(pp_dir)
     df_list = list()
+    test_range = construct_test_dates()
     for feat_file in feature_paths:
         # get hires features and labels for eruption not used in training
         X = load_dataframe(feat_file)
         fnum = int(feat_file.split("fnum_")[-1].split('_features.pkl')[0])
 
-        # Check here for which model to use
-        model = fm.modeldir.split('__te_')[-1]
+        # Check here for which eruption model to use using t0 and t-1 of X index
+        model = which_eruption(X.index[0], X.index[-1], test_range)
 
         # save the indices of the columns corresponding to features for each tree
-        classifier.prepare_for_calibration(X)
+        classifiers[model].prepare_for_calibration(X)
 
         # Calculate raw predict_proba and take the 1 column
-        pp = classifier.predict_proba(X)[:,1]
+        pp = classifiers[model].predict_proba(X)[:,1]
 
         # make a dataframe (could be slow and have speed improvements later)
-        df = pd.DataFrame({'prediction': pp,},
-                index=X.index)
+        df = pd.DataFrame({'prediction': pp,}, index=X.index)
         f_save = f"{pp_dir}/fnum_{fnum:03}__MODEL_te_{model}.pkl"
         save_dataframe(df, f_save)
         df_list.append(df)
 
     timeline = pd.concat(df_list)
-    f_save = f"{fm.rootdir}/calibration/{fm.root}__hires_test__TIMELINE__ncl_{ncl}__ti_{timeline.index[0]}__tf_{timeline.index[-1]}.pkl"
+    f_save = f"{fm.rootdir}/calibration/{fm.root}__hires_test__TIMELINE__ncl_{ncl}.pkl"
     save_dataframe(timeline, f_save, index_label='time')
 
     # run base sigmoid calibration
@@ -704,24 +760,27 @@ def single_sweep(pp, ys, tes, lf=2., thresholds=[0.005, 0.05], inplace=False):
     a, b = _sigmoid_calibration(pp.prediction, ys)
 
     cal_string = f'calibrated__lf_{lf}'
-    # and apply sigmoid function
-    pp[cal_string] = pp['prediction'].apply(get_calibrated, a=a, b=b)
+    # and apply sigmoid function // Could potentially be slowing down performance if i append to dataframe
+    # pp[cal_string] = pp['prediction'].apply(get_calibrated, a=a, b=b)
+    cal_pp = pp['prediction'].apply(get_calibrated, a=a, b=b)
 
     # if 2 numbers in list, assume start and end point
     if len(thresholds) == 2:
         thresholds = np.round(np.linspace(
             thresholds[0], thresholds[-1], num=10, endpoint=True), 4)
 
-    alertday_ratios = list()
-    accuracies = list()
-    falsealert_ratios = list()
+    alertday_ratios = np.zeros(len(thresholds))
+    accuracies = np.zeros(len(thresholds))
+    falsealert_ratios = np.zeros(len(thresholds))
     len_tes = len(tes)
     # for each threshold test the calibrated and generate alerts
-    for th in thresholds:
+    for i,th in enumerate(thresholds):
         # alert mask
         al_string = f'alerts__lf_{lf}__th_{th}'
-        alerts = pp[cal_string] >= th
-        pp[al_string] = alerts.astype(int)
+        # alerts = pp[cal_string] >= th
+        # pp[al_string] = alerts.astype(int) # // Could potentially be slowing down performance if i append to dataframe
+        alerts = cal_pp >= th
+        alerts = alerts.astype(int) # // Could potentially be slowing down performance if i append to dataframe
 
         # # alert day mask
         # ald_string = f'alert_days__lf_{lf}__th_{th}'
@@ -741,10 +800,15 @@ def single_sweep(pp, ys, tes, lf=2., thresholds=[0.005, 0.05], inplace=False):
         # falsealert_ratios.append(get_falsealerts(pp[al_string], lf, tes))
 
         # MODEL ALERTS
-        ma = compute_model_alerts(pp[al_string], lf, tes)
-        alertday_ratios.append(ma['dur'])
-        accuracies.append(ma['true_alert']/len(tes))
-        falsealert_ratios.append(ma['false_alert'] / (ma['false_alert'] + ma['true_alert']))
+        # ma = compute_model_alerts(pp[al_string], lf, tes)
+        ma = compute_model_alerts(alerts, lf, tes)
+        alertday_ratios[i] = ma['dur']
+        accuracies[i] = ma['true_alert']/len(tes)
+        try:
+            falsealert_ratios[i] = ma['false_alert'] / (ma['false_alert'] + ma['true_alert'])
+        except ZeroDivisionError: # No alerts made give zero division error -> Used falsealert_ratio = 1 for smoother plotting
+            falsealert_ratios[i]=1
+            continue
 
 
     # NOTE: considering switching the return statement to a single dict + pp (if required)
@@ -764,33 +828,36 @@ def full_sweep(loaddir=None, ncl=100, savedir=None, hires=False):
     This function is also where you sat
     '''
     if loaddir is not None:
-        # load files from dir
-        load_adr = f"{loaddir}/alertdayratios_df__ncl_{ncl}.csv"
-        load_acc = f"{loaddir}/accuracies_df__ncl_{ncl}.csv"
-        load_far = f"{loaddir}/falsealertratios_windows_df__ncl_{ncl}.csv"
-        adr_df = load_dataframe(load_adr, index_col="thresholds")
-        acc_df = load_dataframe(load_acc, index_col="thresholds")
-        far_df = load_dataframe(load_far, index_col="thresholds")
+        try: # load files from dir
+            load_adr = f"{loaddir}/alertdayratios_df__ncl_{ncl}.csv"
+            load_acc = f"{loaddir}/accuracies_df__ncl_{ncl}.csv"
+            load_far = f"{loaddir}/falsealertratios_windows_df__ncl_{ncl}.csv"
+            adr_df = load_dataframe(load_adr, index_col="thresholds")
+            acc_df = load_dataframe(load_acc, index_col="thresholds")
+            far_df = load_dataframe(load_far, index_col="thresholds")
+        except FileNotFoundError:
+            print(f"files not found... constructing timeline")
+            full_sweep(ncl=ncl, savedir=loaddir, hires=hires)
 
     else:
         tes_pop = TremorData().tes
         tes_pop.pop(3) # remove hard earthquake
         if hires:
             pp = construct_hires_timeline(ncl=ncl)
-            look_forwards = np.round(np.linspace(0.5,7.5,endpoint=True,num=100),4)
+            look_forwards = np.round(np.linspace(0.5,7.5,endpoint=True,num=71),4)
         else:
             timeline = construct_timeline(ncl=ncl)
             pp = timeline.drop(['ys', 'full_calibrated', 'calibrated_prediction'], axis='columns')
             look_forwards = np.arange(1,7.5, step=0.5)
 
         thresholds = np.round(np.linspace(
-            0.005, 0.05, num=100, endpoint=True), 4)
+            0.005, 0.05, num=96, endpoint=True), 4)
 
         alertday_ratios = dict()
         accuracies = dict()
         falsealert_ratios = dict()
-        for lf in look_forwards:
-            print(f"creating forecast model with lf = {lf}")
+        for lf in tqdm(look_forwards):
+            # print(f"creating forecast model with lf = {lf}")
             fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
                             look_forward=lf, root=f'calibration_forecast_model', savefile_type='pkl')
             ys = pd.DataFrame(fm._get_label(pp.index.values), columns=['label'], index=pp.index)
@@ -798,7 +865,7 @@ def full_sweep(loaddir=None, ncl=100, savedir=None, hires=False):
             alertday_ratios[lf] = lf_alertday_ratios
             accuracies[lf] = lf_accuracies
             falsealert_ratios[lf] = lf_falsealert_ratios
-            print(f"done")
+            # print(f"done")
         adr_df = pd.DataFrame(alertday_ratios,
                             index=[f'threshold_{th}'for th in thresholds]).add_prefix('lookforward_')
         adr_df.index.name = "thresholds"
@@ -945,14 +1012,15 @@ def plot_hires_contours(ncl=100):
     ''' This function calls full_sweep() with saved dataframes then creates contour plot
 
     Try some more formatting using
-    colorbar - https://stackoverflow.com/questions/15908371/matplotlib-colorbars-and-its-text-labels 
+    colorbar - https://stackoverflow.com/questions/15908371/matplotlib-colorbars-and-its-text-labels
     contours - https://matplotlib.org/3.1.1/gallery/images_contours_and_fields/contour_label_demo.html#sphx-glr-gallery-images-contours-and-fields-contour-label-demo-py
     '''
     fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
                        look_forward=2., root=f'calibration_forecast_model', savefile_type='pkl')
     tes_pop = TremorData().tes
     tes_pop.pop(3) # remove hard earthquake
-    adr_df, acc_df, far_df = full_sweep(ncl=ncl, hires=True)
+    loaddir = f"{fm.rootdir}/calibration/contour"
+    adr_df, acc_df, far_df = full_sweep(loaddir=loaddir , ncl=ncl, hires=True)
     acc_df = acc_df*len(tes_pop)
     acc_df = acc_df.astype(int)
     # colours here
@@ -984,9 +1052,9 @@ def plot_hires_contours(ncl=100):
         ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1,decimals=1))
     axs[0].set_ylabel('Probability Thresholds for alert', fontsize=12)
 
-    adr_levels = np.linspace(0,0.4, num=10, endpoint=True)
+    adr_levels = [0,0.08,0.09,0.1,0.11,0.12,0.2]
     adr_vals = adr_df.values
-    far_levels = [0.96,0.95, 0.94,0.93,0.92]
+    far_levels = [0.97,0.94,0.92, 0.9,0.87]
     far_levels.sort()
     far_vals = far_df.values
 
@@ -994,23 +1062,30 @@ def plot_hires_contours(ncl=100):
     axs[0].set_title('Alert Day Ratio', fontsize=16)
     adr_cs=axs[0].contour(col_names, row_names, adr_vals, levels=adr_levels, colors='black')
     # adr_cs=axs[0].contour(col_names, row_names, adr_vals, levels=adr_levels, cmap='Greys')
-    axs[0].clabel(adr_cs, inline=True, fontsize=8)
+    # axs[0].clabel(adr_cs, inline=True, fontsize=8)
+    fmt_adr = dict()
+    for level in adr_levels:
+        fmt_adr[level] = f'{level:.1%}'
+    axs[0].clabel(adr_cs, inline=True, fontsize=8, fmt=fmt_adr)
 
     # False Alert ratio contour lines
     axs[1].set_title('False Alert Ratio', fontsize=16)
     far_cs = axs[1].contour(col_names, row_names, far_vals, levels=far_levels, colors='black')
     # far_cs = axs[1].contour(col_names, row_names, far_vals, levels=far_levels, cmap='Greys',vmin=0.5, vmax=1)
-    axs[1].clabel(far_cs, inline=True, fontsize=8)
+    # axs[1].clabel(far_cs, inline=True, fontsize=8)
+    fmt_far = dict()
+    for level in far_levels:
+        fmt_far[level] = f'{level:.1%}'
+    axs[1].clabel(far_cs, inline=True, fontsize=8, fmt=fmt_far)
 
     # Pretty Colorbar formatting
-    cb=fig.colorbar(ct)
+    cb=fig.colorbar(ct, ax=axs[0])
     cb.ax.get_yaxis().set_ticks([])
-    _, cb_xm, _, cb_ym = cb.ax.axis()
     for i in range(5):
         cb.ax.text(2, i, i, ha='center', va='center')
     cb.ax.get_yaxis().labelpad = 15
     cb.ax.set_ylabel('# of detected eruptions', rotation=270)
-    save_plot=f"{fm.rootdir}/calibration/contour/hires_contour_test__ncl_{ncl}.png"
+    save_plot=f"{fm.rootdir}/calibration/contour/hires_contour_test__ncl_{ncl}__v5.png"
     plt.savefig(save_plot, format='png', dpi=300)
     plt.close()
 
@@ -1048,4 +1123,4 @@ if __name__ == '__main__':
     # decompose_to_weeks(
     #     "/Users/teban/Documents/ADMIN/2020-21 Summer RA/PROGS/week7 - hires contour plots/calibration_forecast_model_hires_features__fnum_0to225.pkl",
     #     "/Users/teban/Documents/ADMIN/2020-21 Summer RA/sorenia_whakaari/calibration/tis_and_tfs.csv")
-    plot_hires_contours(ncl=100)
+    plot_hires_contours(ncl=500)
