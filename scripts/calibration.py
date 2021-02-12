@@ -1255,7 +1255,7 @@ def train_one_forecast_model(tstart, tend, eruption_num=None, n_jobs=3, retrain=
     # construct forecast model object from trained modeldir
     data_streams = ['rsam', 'mf', 'hf', 'dsar']
     drop_features = ['linear_trend_timewise', 'agg_linear_trend']
-    fm = ForecastModel(ti=tstart, tf=tend, window=2., overlap=0.75, n_jobs=n_jobs,
+    fm = ForecastModel(ti=tstart, tf=tend, window=2., overlap=0.75,
                        look_forward=2., data_streams=data_streams, root=f'calibration_forecast_model', savefile_type='pkl')
     # set modeldir but reuse features in root
     fm.modeldir = f'{fm.modeldir}__te_{eruption_num}__Ncl_{ncl}'
@@ -1265,7 +1265,7 @@ def train_one_forecast_model(tstart, tend, eruption_num=None, n_jobs=3, retrain=
     else:
         exclude_dates = []
     fm.train(ti='2011-01-01', tf='2020-01-01', drop_features=drop_features, retrain=retrain,
-             exclude_dates=exclude_dates, Ncl=ncl)
+             n_jobs=n_jobs, exclude_dates=exclude_dates, Ncl=ncl)
 
     return fm
 
