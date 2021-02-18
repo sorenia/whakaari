@@ -683,7 +683,7 @@ def which_eruption(start, end, test_times=construct_test_dates()):
         return None
 
 
-def construct_hires_timeline(ncl=100, n_jobs=3):
+def construct_hires_timeline(ncl=500, n_jobs=3):
     '''
     Pseudocode:
     1. Train ALL models with 500 classifiers on the lores data + Create MockForecastModels (for mockfm.predict_proba())
@@ -699,9 +699,9 @@ def construct_hires_timeline(ncl=100, n_jobs=3):
     data_streams = ['rsam', 'mf', 'hf', 'dsar']
     fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
                        look_forward=2., data_streams=data_streams, root=f'calibration_forecast_model', savefile_type='pkl')
-    f_load = f"{fm.rootdir}/calibration/{fm.root}__hires_test__TIMELINE__ncl_{ncl}.pkl"
-    if os.path.isfile(f_load):
-        return load_dataframe(f_load, index_col='time')
+    # f_load = f"{fm.rootdir}/calibration/{fm.root}__hires_test__TIMELINE__ncl_{ncl}.pkl"
+    # if os.path.isfile(f_load):
+    #     return load_dataframe(f_load, index_col='time')
     # columns to manually drop from feature matrix because they are highly correlated to other
     # linear regressors
     drop_features = ['linear_trend_timewise', 'agg_linear_trend']
@@ -741,8 +741,9 @@ def construct_hires_timeline(ncl=100, n_jobs=3):
     pp_dir = f"{fm.rootdir}/calibration/{fm.root}_hires_predictions__with_insertions"
     makedir(pp_dir)
     df_list = list()
+    none_list = list()
     test_range = construct_test_dates()
-    for feat_file in feature_paths:
+    for feat_file in tqdm(feature_paths):
         # get hires features and labels for eruption not used in training
         X = load_dataframe(feat_file)
         fnum = int(feat_file.split("fnum_")[-1].split('_features.pkl')[0])
@@ -757,14 +758,33 @@ def construct_hires_timeline(ncl=100, n_jobs=3):
         pp = classifiers[model].predict_proba(X)[:,1]
 
         # make a dataframe (could be slow and have speed improvements later)
-        df = pd.DataFrame({'prediction': pp,}, index=X.index)
+        df = pd.DataFrame({'prediction': pp,'model': model}, index=X.index)
         f_save = f"{pp_dir}/fnum_{fnum:03}__MODEL_te_{model}.pkl"
         save_dataframe(df, f_save)
         df_list.append(df)
 
+        ############### Saving the NONE timeline for figs_calibration.py
+        # ---------Continue if model is None
+        if model is None:
+            none_list.append(model)
+            continue
+        # ---------else REDO with None Model
+        classifiers[None].prepare_for_calibration(X)
+        pp = classifiers[None].predict_proba(X)[:,1]
+        df = pd.DataFrame({'prediction': pp,'model': None}, index=X.index)
+        f_save = f"{pp_dir}/fnum_{fnum:03}__MODEL_te_{None}.pkl"
+        save_dataframe(df, f_save)
+        none_list.append(df)
+
+
     timeline = pd.concat(df_list)
     f_save = f"{fm.rootdir}/calibration/{fm.root}__hires_test__TIMELINE__ncl_{ncl}.pkl"
     save_dataframe(timeline, f_save, index_label='time')
+
+    # -------------Saving the NONE timeline for figs_calibration.py
+    none_timeline = pd.concat(none_list)
+    f_save = f"{fm.rootdir}/calibration/{fm.root}__hires_test__NONE__ncl_{ncl}.pkl"
+    save_dataframe(none_timeline, f_save, index_label='time')
 
     # run base sigmoid calibration
     ys = pd.DataFrame(fm._get_label(timeline.index.values),
@@ -1365,7 +1385,7 @@ if __name__ == '__main__':
     # os.chdir('..')  # set working directory to root
     # calibration()
     # timeline_calibration()
-    test_hires_calibration(download_data=False)
+    # test_hires_calibration(download_data=False)
     # full_sweep()
     # plot_heatmap()
     # # plot_contours(ncl=500)
@@ -1373,3 +1393,4 @@ if __name__ == '__main__':
     #     "/Users/teban/Documents/ADMIN/2020-21 Summer RA/PROGS/week7 - hires contour plots/calibration_forecast_model_hires_features__fnum_0to225.pkl",
     #     "/Users/teban/Documents/ADMIN/2020-21 Summer RA/sorenia_whakaari/calibration/tis_and_tfs.csv")
     # plot_hires_contours(ncl=500)
+    construct_hires_timeline()

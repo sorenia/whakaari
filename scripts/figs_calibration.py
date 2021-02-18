@@ -1,7 +1,7 @@
 import os, sys
 from glob import glob
 sys.path.insert(0, os.path.abspath('..'))
-from whakaari import ForecastModel, load_dataframe, makedir
+from whakaari import TremorData, ForecastModel, load_dataframe, makedir, timedelta, datetimeify
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -17,6 +17,10 @@ colour_dict = {
     '3_month' : 'teal',
     '2_month' : 'goldenrod',
     '1_month' : 'navy',
+    '0' : 'tomato',
+    '1' : 'teal',
+    '2' : 'goldenrod',
+    '4' : 'navy',
 }
 
 # Marker_dict for eruption_num
@@ -192,11 +196,58 @@ def stacked_by_all_plot(source=None, save=False, save_path=None, show=False):
 ### ---------------------------------------------------------------
 
 
+### --- fig1: Visualisation of constructing model output timeline
+def fig1():
+
+
+    data_streams = ['rsam', 'mf', 'hf', 'dsar']
+    fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
+                       look_forward=2., data_streams=data_streams, root=f'calibration_forecast_model', savefile_type='pkl')
+    f_load = f"{fm.rootdir}/calibration/{fm.root}__hires_test__TIMELINE__ncl_500.pkl"
+    try:
+        timeline = load_dataframe(f_load, index_col='time')
+    except FileNotFoundError:
+        print("file {f_load} not found, please run construct_hires_timeline() [calibration.py]")
+        return
+    none_timeline = load_dataframe(f"{fm.rootdir}/calibration/{fm.root}__hires_test__NONE__ncl_500.pkl", index_col='time')
+
+    fig, ax = plt.subplots(figsize=[8,3])
+    fig.tight_layout
+    a_index = timeline.index[0]
+    insertion_enums = [0,1,2,4]
+    for eruption_num in insertion_enums:
+        insert = timeline.loc[timeline.model==eruption_num]
+        b_index = insert.index[0]
+        # plot before
+        none_section = timeline.loc[(a_index <= timeline.index) & (timeline.index < b_index)]
+        ax.plot(none_section.index, none_section.prediction, 'k-', lw=0.15)
+
+        # plot on (insert + None)
+        ax.plot(insert.index, insert.prediction, 'k-', lw=0.15)
+        ax.plot(insert.index, none_timeline.loc[insert.index].prediction, 'k--', lw=0.15)
+        ax.fill_between([insert.index[0], insert.index[-1]],[-0.05,-0.05],[1.05,1.05], color=colour_dict[f'{eruption_num}'], zorder=1, label=f'te={eruption_num}', alpha=0.5)
+        try:
+            a_index = timeline.loc[insert.index[-1] < timeline.index].index[0]
+        except IndexError:
+            continue
+    # eruptions
+    for te in fm.data.tes:
+        ax.axvline(te, color='r', linestyle='--', zorder=5, linewidth=0.5)
+    ax.axvline(te, color='r', linestyle='--', label='eruption', linewidth=0.5)
+    ax.set_xlim(datetimeify('2011-01-01'), datetimeify('2020-01-01'))
+    ax.set_ylim(0,1)
+    for tick in ax.xaxis.get_major_ticks():
+        tick.label.set_fontsize(8)
+    ax.set_yticks([0,1])
+    ax.set_yticklabels([0,1], fontsize=8)
+    # ax.legend()
+    plt.savefig("fig1.png", format='png', dpi=300)
+
 if __name__ == '__main__':
     ### --- output vs probability of eruption plots Refer to https://dempseyresearchgroup.slack.com/archives/C01E27W4A5R/p1607477796071700
     # stacked_by_eruption_plot()
     # stacked_by_test_window_plot()
-    stacked_by_all_plot(save=True)
+    # stacked_by_all_plot(save=True)
 
     ### --- timeline plots
     fig1()
