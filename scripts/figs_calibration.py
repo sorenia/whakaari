@@ -6,6 +6,8 @@ from whakaari import TremorData, ForecastModel, load_dataframe, makedir, timedel
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+from sklearn.calibration import _sigmoid_calibration
+from scipy.special import expit
 
 ### --- ORIGINAL output vs probability of eruption plots Refer to https://dempseyresearchgroup.slack.com/archives/C01E27W4A5R/p1607477796071700
 # Used for path to ORIGINAL version of sigmoid calibration
@@ -243,6 +245,69 @@ def fig1():
     # ax.legend()
     plt.savefig("fig1.png", format='png', dpi=300)
 
+
+# Visualisation of unique sigmoid curves + large curve
+def fig2():
+    ''' Requires construct_hires_timeline() to be run [see calibration.py]
+
+    - uses pp_dir
+    - gets the te models using glob
+    - for each te model:
+        * append the load data frame
+        * concatenate the dataframes
+        * run _sigmoid_calibration for a,b
+    PLOTTING
+    - plot each te with above dicts
+    - plot overall curve
+    - bob's your uncle
+    NOTE: this method assumes only one holdout model per fnum
+    '''
+    eruption_nums = [0,1,2,4]
+    data_streams = ['rsam', 'mf', 'hf', 'dsar']
+    fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
+                       look_forward=2., data_streams=data_streams, root=f'calibration_forecast_model', savefile_type='pkl')
+    f_load = f"{fm.rootdir}/calibration/{fm.root}__hires_test__TIMELINE__ncl_500.pkl"
+    try:
+        timeline = load_dataframe(f_load, index_col='time')
+    except FileNotFoundError:
+        print("file {f_load} not found, please run construct_hires_timeline() [calibration.py]")
+
+    pp_dir = f"{fm.rootdir}/calibration/{fm.root}_hires_predictions__with_insertions"
+
+    fig, ax = plt.subplots(figsize=[8,3])
+    fig.tight_layout
+
+    # Plot each singular out of sample curve
+    for enum in eruption_nums:
+        df_list = list()
+        efiles = glob(f'{pp_dir}/*te_{enum}*')
+        efiles.sort()
+        for fl in efiles:
+            df_list.append(load_dataframe(fl))
+        enum_timeline = pd.concat(df_list)
+        # run sigmoid calibration for enum
+        ys = pd.DataFrame(fm._get_label(enum_timeline.index.values),
+                        columns=['label'], index=enum_timeline.index)
+        a, b = _sigmoid_calibration(enum_timeline.prediction, ys)
+        plt.scatter(enum_timeline.prediction, expit(-(a * enum_timeline.prediction + b)),
+            s=5, zorder=2, alpha = 0.6, label=f'te={enum}; a={a}, b={b}', color=colour_dict[str(enum)])
+
+    # Plot the big timeline curve
+    # Timeline contains the calibrated predictions but no notion of a,b
+
+    plt.axvline(0.8, color='pink', linewidth=5, zorder=1, label="Forecast threshold")
+
+    plt.xlabel("Forecast Consensus", fontsize=8)
+    plt.ylabel("Calibrated Probability of eruption", fontsize=8)
+    plt.title(f"Sigmoids by eruption domain", fontsize=8)
+    for t in ax.get_xticklabels() + ax.get_yticklabels():  # increase of x and y tick labels
+        t.set_fontsize(6.)
+
+    ax.legend(fontsize=8)
+    plt.savefig("fig2.png", format='png', dpi=300)
+    plt.close(fig)
+
+
 if __name__ == '__main__':
     ### --- output vs probability of eruption plots Refer to https://dempseyresearchgroup.slack.com/archives/C01E27W4A5R/p1607477796071700
     # stacked_by_eruption_plot()
@@ -251,4 +316,5 @@ if __name__ == '__main__':
 
     ### --- timeline plots
     fig1()
+    fig2()
 
