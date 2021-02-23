@@ -708,7 +708,7 @@ def construct_hires_timeline(ncl=500, n_jobs=3):
 
     # Train ALL models
     td = TremorData()
-    eruption_nums = [None, 0, 1, 2, 3, 4]
+    eruption_nums = [None, 0, 1, 2, 4] # Specify eruption nums, note 2016 eruption is te=3
     for enum in eruption_nums:
         # Setting exclude dates
         if enum is None: # Rearranged for readability
@@ -750,6 +750,9 @@ def construct_hires_timeline(ncl=500, n_jobs=3):
 
         # Check here for which eruption model to use using t0 and t-1 of X index
         model = which_eruption(X.index[0], X.index[-1], test_range)
+
+        # Use None model for the 2016 eruption - very hacky way to do this
+        if model == 3: model = None
 
         # save the indices of the columns corresponding to features for each tree
         classifiers[model].prepare_for_calibration(X)
