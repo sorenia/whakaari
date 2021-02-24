@@ -22,6 +22,7 @@ colour_dict = {
     '0' : 'tomato',
     '1' : 'teal',
     '2' : 'goldenrod',
+    '3' : 'violet',
     '4' : 'navy',
 }
 
@@ -262,7 +263,7 @@ def fig2():
     - bob's your uncle
     NOTE: this method assumes only one holdout model per fnum
     '''
-    eruption_nums = [0,1,2,4]
+    eruption_nums = [0,1,2,3,4]
     data_streams = ['rsam', 'mf', 'hf', 'dsar']
     fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
                        look_forward=2., data_streams=data_streams, root=f'calibration_forecast_model', savefile_type='pkl')
@@ -272,6 +273,9 @@ def fig2():
     except FileNotFoundError:
         print("file {f_load} not found, please run construct_hires_timeline() [calibration.py]")
 
+    # Read in timeline a and b from file
+    with open(f"{fm.rootdir}/calibration/sigmoid_parameters__hires_test__ncl_500.csv", "r") as f:
+        tl_a, tl_b = (float(val) for val in f.readlines()[1].split(','))
     pp_dir = f"{fm.rootdir}/calibration/{fm.root}_hires_predictions__with_insertions"
 
     fig, ax = plt.subplots(figsize=[8,3])
@@ -290,10 +294,11 @@ def fig2():
                         columns=['label'], index=enum_timeline.index)
         a, b = _sigmoid_calibration(enum_timeline.prediction, ys)
         plt.scatter(enum_timeline.prediction, expit(-(a * enum_timeline.prediction + b)),
-            s=5, zorder=2, alpha = 0.6, label=f'te={enum}; a={a}, b={b}', color=colour_dict[str(enum)])
+            s=15, zorder=2, alpha = 0.6, label=f'te={enum}; a={a}, b={b}', color=colour_dict[str(enum)], facecolors='none', linewidth=0.3)
 
     # Plot the big timeline curve
-    # Timeline contains the calibrated predictions but no notion of a,b
+    plt.scatter(timeline.prediction, expit(-(tl_a * timeline.prediction + tl_b)),
+        s=15, zorder=4, alpha = 0.6, label=f'Timeline; a={tl_a}, b={tl_b}', color='black', facecolors='none', linewidth=0.3)
 
     plt.axvline(0.8, color='pink', linewidth=5, zorder=1, label="Forecast threshold")
 
