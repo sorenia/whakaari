@@ -311,6 +311,69 @@ def fig2():
     ax.legend(fontsize=8)
     plt.savefig("fig2.png", format='png', dpi=300)
     plt.close(fig)
+def fig2alt():
+    ''' Requires construct_hires_timeline() to be run [see calibration.py]
+
+    - uses pp_dir
+    - gets the te models using glob
+    - for each te model:
+        * append the load data frame
+        * concatenate the dataframes
+        * run _sigmoid_calibration for a,b
+    PLOTTING
+    - plot each te with above dicts
+    - plot overall curve
+    - bob's your uncle
+    NOTE: this method assumes only one holdout model per fnum
+    '''
+    eruption_nums = [0,1,2,3,4]
+    data_streams = ['rsam', 'mf', 'hf', 'dsar']
+    fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
+                       look_forward=2., data_streams=data_streams, root=f'calibration_forecast_model', savefile_type='pkl')
+    f_load = f"{fm.rootdir}/calibration/{fm.root}__hires_test__TIMELINE__ncl_500.pkl"
+    try:
+        timeline = load_dataframe(f_load, index_col='time')
+    except FileNotFoundError:
+        print("file {f_load} not found, please run construct_hires_timeline() [calibration.py]")
+
+    # Read in timeline a and b from file
+    with open(f"{fm.rootdir}/calibration/sigmoid_parameters__hires_test__ncl_500.csv", "r") as f:
+        tl_a, tl_b = (float(val) for val in f.readlines()[1].split(','))
+    pp_dir = f"{fm.rootdir}/calibration/{fm.root}_hires_predictions__with_insertions"
+
+    fig, ax = plt.subplots(figsize=[8,3])
+    fig.tight_layout
+
+    # Plot each singular out of sample curve
+    for enum in eruption_nums:
+        df_list = list()
+        efiles = glob(f'{pp_dir}/*te_{enum}*')
+        efiles.sort()
+        for fl in efiles:
+            df_list.append(load_dataframe(fl))
+        enum_timeline = pd.concat(df_list)
+        # run sigmoid calibration for enum
+        ys = pd.DataFrame(fm._get_label(enum_timeline.index.values),
+                        columns=['label'], index=enum_timeline.index)
+        a, b = _sigmoid_calibration(enum_timeline.prediction, ys)
+        plt.scatter(enum_timeline.prediction, expit(-(a * enum_timeline.prediction + b)),
+            s=15, zorder=2, alpha = 0.6, label=f'te={enum}; a={a}, b={b}', color='black', marker=marker_dict[str(enum)], facecolors='none', linewidth=0.3)
+
+    # Plot the big timeline curve
+    plt.scatter(timeline.prediction, expit(-(tl_a * timeline.prediction + tl_b)),
+        s=15, zorder=4, alpha = 0.6, label=f'Timeline; a={tl_a}, b={tl_b}', color='goldenrod', facecolors='none', linewidth=0.3)
+
+    plt.axvline(0.8, color='pink', linewidth=5, zorder=1, label="Forecast threshold")
+
+    plt.xlabel("Forecast Consensus", fontsize=8)
+    plt.ylabel("Calibrated Probability of eruption", fontsize=8)
+    plt.title(f"Sigmoids by eruption domain", fontsize=8)
+    for t in ax.get_xticklabels() + ax.get_yticklabels():  # increase of x and y tick labels
+        t.set_fontsize(6.)
+
+    ax.legend(fontsize=8)
+    plt.savefig("fig2alt.png", format='png', dpi=300)
+    plt.close(fig)
 
 
 if __name__ == '__main__':
@@ -322,4 +385,5 @@ if __name__ == '__main__':
     ### --- timeline plots
     fig1()
     fig2()
+    fig2alt()
 
