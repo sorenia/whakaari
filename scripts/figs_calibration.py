@@ -4,6 +4,7 @@ sys.path.insert(0, os.path.abspath('..'))
 from whakaari import TremorData, ForecastModel, load_dataframe, makedir, timedelta, datetimeify
 
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import pandas as pd
 import numpy as np
 from sklearn.calibration import _sigmoid_calibration
@@ -202,7 +203,7 @@ def stacked_by_all_plot(source=None, save=False, save_path=None, show=False):
 ### --- fig1: Visualisation of constructing model output timeline
 def fig1():
 
-
+    week=timedelta(weeks=1)
     data_streams = ['rsam', 'mf', 'hf', 'dsar']
     fm = ForecastModel(ti='2011-01-01', tf='2020-01-01', window=2., overlap=0.75,
                        look_forward=2., data_streams=data_streams, root=f'calibration_forecast_model', savefile_type='pkl')
@@ -214,37 +215,52 @@ def fig1():
         return
     none_timeline = load_dataframe(f"{fm.rootdir}/calibration/{fm.root}__hires_test__NONE__ncl_500.pkl", index_col='time')
 
-    fig, ax = plt.subplots(figsize=[8,3])
+    fig, axs = plt.subplots(1,5, sharey=True,figsize=[8,3])
     fig.tight_layout
-    a_index = timeline.index[0]
-    insertion_enums = [0,1,2,4]
-    for eruption_num in insertion_enums:
-        insert = timeline.loc[timeline.model==eruption_num]
-        b_index = insert.index[0]
-        # plot before
-        none_section = timeline.loc[(a_index <= timeline.index) & (timeline.index < b_index)]
-        ax.plot(none_section.index, none_section.prediction, 'k-', lw=0.15)
+    # a_index = timeline.index[0]
+    insertion_enums = [0,1,2,3,4]
+    for i, ax in enumerate(axs):
+        insert = timeline.loc[timeline.model==insertion_enums[i]]
+        # b_index = insert.index[0]
+        # plot base
+        none_section = timeline.loc[(insert.index[0]-week <= timeline.index) & (timeline.index < insert.index[-1] + week)]
+        ax.plot(none_section.index, none_section.prediction, 'k-', lw=0.5)
+        ax.set_xlim(none_section.index[0], none_section.index[-1])
+        # format the ticks
+        ax.tick_params(labeltop='off') # don't put tick labels at the top
+        ax.xaxis.set_major_locator(mdates.MonthLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%b-%y'))
+        for tick in ax.xaxis.get_major_ticks():
+            tick.label.set_fontsize(6)
 
-        # plot on (insert + None)
-        ax.plot(insert.index, insert.prediction, 'k-', lw=0.15)
-        ax.plot(insert.index, none_timeline.loc[insert.index].prediction, 'k--', lw=0.15)
-        ax.fill_between([insert.index[0], insert.index[-1]],[-0.05,-0.05],[1.05,1.05], color=colour_dict[f'{eruption_num}'], zorder=1, label=f'te={eruption_num}', alpha=0.5)
-        try:
-            a_index = timeline.loc[insert.index[-1] < timeline.index].index[0]
-        except IndexError:
-            continue
-    # eruptions
-    for te in fm.data.tes:
-        ax.axvline(te, color='r', linestyle='--', zorder=5, linewidth=0.5)
-    ax.axvline(te, color='r', linestyle='--', label='eruption', linewidth=0.5)
-    ax.set_xlim(datetimeify('2011-01-01'), datetimeify('2020-01-01'))
-    ax.set_ylim(0,1)
-    for tick in ax.xaxis.get_major_ticks():
-        tick.label.set_fontsize(8)
-    ax.set_yticks([0,1])
-    ax.set_yticklabels([0,1], fontsize=8)
+        if i==0:
+            ax.yaxis.tick_left()
+            ax.set_ylabel('forecast mean')
+        ax.set_ylim(0,1)
+        ax.set_yticks([0,1])
+        ax.set_yticklabels([0,1], fontsize=8)
+
+        # plot insert
+        ax.plot(insert.index, insert.prediction, 'b-', lw=0.15)
+        ax.fill_between([insert.index[0], insert.index[-1]],[-0.05,-0.05],[1.05,1.05], color=colour_dict[f'{insertion_enums[i]}'], zorder=1, label=f'te={insertion_enums[i]}', alpha=0.5)
+        ax.axvline(fm.data.tes[i], color='r', linestyle='--', zorder=5, linewidth=0.5)
+        d = .015 # how big to make the diagonal lines in axes coordinates
+        kwargs = dict(transform=ax.transAxes, color='k', clip_on=False)
+        # hide the spines between ax and ax2
+        if i != 4:
+            ax.spines['right'].set_visible(False)
+            ax.plot((1-d,1+d),(-d,+d), **kwargs) # top-right diagonal
+            ax.plot((1-d,1+d),(1-d,1+d), **kwargs) # bottom-right diagonal
+        if i != 0:
+            ax.spines['left'].set_visible(False)
+            # Diagonal break lines
+            ax.plot((-d,d),(-d,+d), **kwargs) # top-left diagonal
+            ax.plot((-d,d),(1-d,1+d), **kwargs) # bottom-left diagonal
+
+    # Make the spacing between the two axes a bit smaller
+    plt.subplots_adjust(wspace=0.15)
     # ax.legend()
-    plt.savefig("fig1.png", format='png', dpi=300)
+    plt.savefig("fig1_v2.png", format='png', dpi=300)
 
 
 # Visualisation of unique sigmoid curves + large curve
